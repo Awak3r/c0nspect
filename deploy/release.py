@@ -195,7 +195,7 @@ def release(source, root, image, username, revision, token):
             command = compose_command(root)
             run_command(command + ["config", "--quiet"])
             activated = True
-            # Never recreate PostgreSQL, start Caddy, rebuild, or pull mutable DB tags.
+            # Only replace app: never recreate PostgreSQL, rebuild, or pull mutable DB tags.
             run_command(command + ["up", "--detach", "--no-deps", "--no-build", "--pull", "never",
                                    "--wait", "--wait-timeout", "180", "app"], timeout=240)
         except BaseException:

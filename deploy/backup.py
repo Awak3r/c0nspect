@@ -64,7 +64,7 @@ def create_backup(compose, output):
         # A backup never mutates stored data. Restore the prior running state even
         # when pg_dump/tar fails; never start an app that was already stopped.
         if stopped:
-            compose.resume({"app": states["app"], "proxy": "exited"})
+            compose.resume({"app": states["app"]})
     return destination
 
 

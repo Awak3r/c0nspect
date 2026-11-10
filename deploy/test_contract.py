@@ -64,13 +64,13 @@ class ContractTests(unittest.TestCase):
                     walk(child)
         walk(self.document)
 
-    def test_caddy_preserves_app_referrer_policy(self):
-        config = (ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
-        active = "\n".join(line.split("#", 1)[0] for line in config.splitlines())
-        self.assertNotRegex(
-            active, r"(?i)\bReferrer-Policy\b",
-            "Caddy must preserve the app's route-specific referrer policy.",
-        )
+    def test_compose_has_no_container_proxy_or_caddy_artifacts(self):
+        self.assertFalse((ROOT / "deploy" / "Caddyfile").exists())
+        for path in (ROOT / "compose.yaml", *sorted((ROOT / "deploy").glob("compose.*.yaml"))):
+            with self.subTest(path=path.name):
+                config = path.read_text(encoding="utf-8")
+                self.assertNotRegex(config, r"(?im)^\s*proxy\s*:")
+                self.assertNotRegex(config, r"(?i)caddy")
 
     def test_readme_shell_blocks_parse_without_execution(self):
         bash = shutil.which("bash")

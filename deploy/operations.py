@@ -122,7 +122,7 @@ class Compose:
     def __init__(self, *, local=False, nginx=False):
         if local and nginx:
             raise OperationError("Choose only one of --local and --nginx.")
-        self.managed_services = ("app",) if nginx else ("app", "proxy")
+        self.managed_services = ("app",)
         self.env_path = ROOT / ".env"
         if not self.env_path.is_file() or self.env_path.stat().st_mode & 0o077:
             raise OperationError("Create .env and restrict it with chmod 600 .env first.")
@@ -132,7 +132,7 @@ class Compose:
         ]
         if local:
             self.command += ["-f", str(ROOT / "deploy" / "compose.local.yaml")]
-        elif nginx:
+        else:
             self.command += ["-f", str(ROOT / "deploy" / "compose.nginx.yaml")]
         self.config = json.loads(self.call("config", "--format", "json"))
         services = self.config["services"]
@@ -253,5 +253,5 @@ def add_compose_arguments(parser):
     group.add_argument("--local", action="store_true", help="Use deploy/compose.local.yaml (same volumes/project).")
     group.add_argument(
         "--nginx", action="store_true",
-        help="Use deploy/compose.nginx.yaml; manage only app, never host nginx or the Caddy service.",
+        help="Use deploy/compose.nginx.yaml (default); manage only app, never host nginx.",
     )

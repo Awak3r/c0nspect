@@ -270,7 +270,7 @@
         "operationId": "getReadiness",
         "tags": ["Service"],
         "summary": "Local application/database readiness probe",
-        "description": "Used by Docker and Caddy over the isolated network. Keep responses minimal and free of secrets. A 200 means the service is ready, including database connectivity; response body is not part of the integration contract.",
+        "description": "Used by Docker health checks and deployment readiness verification; host nginx forwards public HTTPS requests to the loopback app port. Keep responses minimal and free of secrets. A 200 means the service is ready, including database connectivity; response body is not part of the integration contract.",
         "security": [],
         "responses": {
           "200": {"description": "Ready."},

@@ -24,7 +24,7 @@ A share grants access to the latest saved note and its images, not a frozen copy
 
 ## Production behind existing host nginx
 
-Use this mode for the **2 GiB VPS where host nginx already owns ports 80/443**. The app uses the reported free loopback port **8096**; PostgreSQL is never published. The supplied overlay does not change the base `compose.yaml`. **Never run bare `docker compose up` here**, combine nginx/local overlays, or enable the `caddy` profile: the standalone proxy would compete with the existing nginx.
+Production uses the **existing host nginx on ports 80/443** and GitHub Actions for updates. The app publishes only loopback port **8096**; PostgreSQL is never published. Always combine `compose.yaml` with `deploy/compose.nginx.yaml` for production. The base Compose file contains only `app` and `db`; it is not a complete production launch configuration. Never combine nginx/local overlays.
 
 The following initial-provisioning procedure is a **deployer-run runbook**, separate from the [automated update pipeline](docs/ci-cd.md). CI/CD updates an existing installation; it does not provision a VPS or reload host nginx. Examples assume the deployer stages a **new** checkout at `/opt/conspect` and the host already uses Debian/Ubuntu-style `sites-available`/`sites-enabled`. If its per-site include layout differs, adapt only the Conspect site path after review; do not change global `nginx.conf`, default sites, other vhosts or existing services. Replace `notes.example.com` consistently in both nginx examples, certificate paths, redirect and app configuration.
 
@@ -46,7 +46,6 @@ sudo chmod 0600 /opt/conspect/.env
 Use an explicitly chosen root shell for the remaining host steps, with working directory `/opt/conspect`; do not rely on an accidental sudo/Docker context switch. Fill the required database, stable `APP_SECRET` and initial owner settings from [Configuration](#configuration), without putting real secrets into this README, terminal tracing or logs. The additional **nonsecret** `.env` settings are:
 
 ```dotenv
-DOMAIN=notes.example.com
 APP_BASE_URL=https://notes.example.com
 CONSPECT_IMAGE=conspect:local
 CONSPECT_HTTP_PORT=8096
@@ -116,7 +115,7 @@ docker compose --env-file .env -f compose.yaml -f deploy/compose.nginx.yaml ps
 curl --fail --silent --show-error http://127.0.0.1:8096/healthz
 ```
 
-The overlay's **default `up` enables only app/db**; explicit service targets add another safeguard. No Caddy container is started, and no host database port is published. The host nginx snippets deliberately remain separate from Compose. Do not apply the local override in production: it publishes a database port and disables proxy trust.
+The production configuration contains **only app/db**, with no containerized reverse proxy or host-published database port. The host nginx snippets deliberately remain separate from Compose. Do not apply the local override in production: it publishes a database port and disables proxy trust.
 
 After certificates exist, replace only the Conspect bootstrap file, retaining a rollback copy outside the enabled directory. If the syntax check fails, restore that file without reloading nginx:
 
@@ -154,56 +153,41 @@ IFS= read -r BACKUP_DIR
 python3 deploy/restore.py "$BACKUP_DIR" --nginx --yes
 ```
 
-These scripts stop/restart **only the Compose app** in nginx mode, leave the DB running, and **never stop/reload host nginx, start Caddy, or manage other host services**. While the app is stopped, the TLS vhost can return 502; do not stop the shared host nginx to hide maintenance. A failed destructive restore keeps the app offline until corrected; host nginx and unrelated sites remain up. Full consistency/security/offsite limitations remain in [Backups](#backups-local-until-offsite-storage-is-configured).
+These scripts stop/restart **only the Compose app**, leave the DB running, and **never stop/reload host nginx or manage other host services**. While the app is stopped, the TLS vhost can return 502; do not stop the shared host nginx to hide maintenance. A failed destructive restore keeps the app offline until corrected; host nginx and unrelated sites remain up. Full consistency/security/offsite limitations remain in [Backups](#backups-local-until-offsite-storage-is-configured).
 
-## Standalone Caddy deployment (alternative)
+## Topology and persistent state
 
-Prerequisites: a Linux host, Docker Engine with Compose v2+ (`--wait` support), a DNS name pointing to that host, free TCP ports 80/443 (UDP 443 is optional HTTP/3), and sufficient disk space for **both live data and backups**. The scripts additionally require host Python 3.10+; curl/jq are useful for checks. Configure the firewall separately, and verify DNS/IPv6 as applicable. This repository does not connect to or modify a VPS.
-
-From the repository root:
-
-```sh
-cp .env.example .env
-chmod 600 .env
-openssl rand -hex 32    # POSTGRES_PASSWORD: copy the result into .env
-openssl rand -hex 32    # APP_SECRET: a DIFFERENT result; retain it permanently
-```
-
-Edit `.env`: set `DOMAIN`, confirm `APP_BASE_URL=https://${DOMAIN}`, set both generated values and choose `OWNER_PASSWORD` (12–72 UTF-8 **bytes**). Use a URL-safe database password, such as the generated hex string. If using another password, percent-encode it in `DATABASE_URL`; its decoded value must match `POSTGRES_PASSWORD`. Dotenv single quotes prevent interpolation in owner passwords containing `$` or `#`. Do not `source .env` as a shell script.
-
-```sh
-# Validates without printing the resolved configuration/secrets:
-docker compose --env-file .env -f compose.yaml config --quiet
-
-# Build the Go binary with its embedded assets and start the deployment:
-docker compose --env-file .env -f compose.yaml up -d --build --wait --wait-timeout 180
-docker compose --env-file .env -f compose.yaml ps
-curl --fail --silent --show-error https://notes.example.com/healthz
-```
-
-Replace `notes.example.com` in examples with your actual domain. Open the site, sign in as the bootstrap owner, create a project and import test notes before using real data. Successful Compose startup is not a substitute for testing authorization, rendering and restoration.
-
-### Topology and persistent state
-
-In this **standalone Caddy mode**, only `proxy` publishes ports. `app:8080` and PostgreSQL have **no host-published ports**. The host-nginx mode instead publishes only the app on loopback and does not start `proxy`. The app and Caddy share the frontend network; PostgreSQL is on a separate internal backend network. The Docker host/daemon and other services deliberately attached to these networks remain trusted infrastructure.
+Host nginx terminates HTTPS and forwards requests to `127.0.0.1:8096`. The app retains its frontend network and reaches PostgreSQL through the internal backend network. Production publishes no database port. Docker Compose manages only `app` and `db`; host nginx and Certbot remain outside this project. The Docker host/daemon and other services deliberately attached to these networks remain trusted infrastructure.
 
 | Service | Storage | Purpose |
 | --- | --- | --- |
 | `app` | `uploads:/data/uploads` | Uploaded images; Go binary runs as UID/GID **10001:10001** |
 | `db` (`postgres:17-alpine`) | `db_data:/var/lib/postgresql/data` | Notes, owner, sessions, keys, shares and metadata |
-| `proxy` (`caddy:2-alpine`) | `caddy_data:/data`, `caddy_config:/config` | TLS certificates/ACME state and Caddy state |
 
 Compose prefixes volume names with `conspect_`. Keep that project name for all operations; do not override `COMPOSE_PROJECT_NAME`. The app has a read-only root filesystem, a small temporary `/tmp`, dropped capabilities, and a writable uploads volume. The runtime contains CA certificates, GNU tar (used by backups), and BusyBox wget (readiness checks). There are no runtime source-tree/renderer mounts.
 
-`deploy/Caddyfile` obtains TLS for `DOMAIN` and proxies to `app:8080`, actively checking `/healthz`. Docker also checks PostgreSQL readiness and application readiness. Caddy access logging is **not enabled**; request-error logging is excluded too because failing URLs can contain share tokens. Operational startup/TLS logs remain available. Do not turn on debug/request logging or send token-bearing paths to an upstream CDN/analytics service. Review Go logging separately: a proxy configuration cannot prevent the app from logging secrets.
+Docker checks PostgreSQL and application readiness; host nginx/Certbot manage TLS as described in the provisioning runbook. Do not enable request/debug logging or send token-bearing paths to upstream analytics: URLs may contain share tokens. Review Go logging separately; proxy configuration cannot prevent the app from logging secrets.
 
-The **app owns the per-route referrer policy**. Login/admin documents use `Referrer-Policy: same-origin` and matching management-head metadata. Owner/public note readers use `no-referrer`; all `/s/...` responses (including errors and attachments) and API responses also retain `no-referrer`. Neither Caddy nor host nginx may impose a global `Referrer-Policy` override. A blanket `no-referrer` on a login/admin document can make a native form POST send `Origin: null`, which authentication intentionally rejects.
+The **app owns the per-route referrer policy**. Login/admin documents use `Referrer-Policy: same-origin` and matching management-head metadata. Owner/public note readers use `no-referrer`; all `/s/...` responses (including errors and attachments) and API responses also retain `no-referrer`. Host nginx must not impose a global `Referrer-Policy` override. A blanket `no-referrer` on a login/admin document can make a native form POST send `Origin: null`, which authentication intentionally rejects.
 
 If native login/admin forms return a CSRF/403 error, check that `APP_BASE_URL` exactly matches the browser origin, remove any proxy/CDN referrer-policy overrides, and freshly reload the login or management document before submitting again. Do **not** accept null/missing origins, disable CSRF checks, or reset the owner password to work around this policy mismatch.
 
 Do not use `docker compose down -v` on a data-bearing installation. Normal `stop`, `start`, `up` and `down` without `-v` preserve named volumes. Changing PostgreSQL environment values on an existing volume does **not** rename the database/user or rotate its stored password.
 
 ## Configuration
+
+Prerequisites for production: a Linux VPS with existing nginx/Certbot, Docker Engine with Compose v2+ (`--wait` support), Python 3.10+, DNS/TLS configured for the chosen hostname, and enough disk space for live data **and backups**.
+
+Create a private configuration only for a **new installation**; never replace an existing `.env` or regenerate its stable secret during an update:
+
+```sh
+cp -n .env.example .env
+chmod 600 .env
+openssl rand -hex 32    # POSTGRES_PASSWORD: copy into .env
+openssl rand -hex 32    # APP_SECRET: a DIFFERENT value; retain permanently
+```
+
+Set `APP_BASE_URL=https://your-domain`, the generated values, matching database credentials, and an initial `OWNER_PASSWORD` (12–72 UTF-8 **bytes**). A URL-safe hex database password needs no URL escaping; otherwise percent-encode it in `DATABASE_URL`. Dotenv single quotes prevent interpolation in passwords containing `$` or `#`. Do not `source .env` as a shell script. Use the host-nginx provisioning runbook for first startup and Actions for normal updates.
 
 App configuration names (all size limits are encoded **bytes**):
 
@@ -219,9 +203,9 @@ App configuration names (all size limits are encoded **bytes**):
 | `MAX_MARKDOWN_BYTES` | `2097152` (2 MiB) | UTF-8 Markdown source/import limit. |
 | `MAX_IMAGE_BYTES` | `10485760` (10 MiB) | Per-image limit; also at most 20,000,000 decoded pixels and 16,000 pixels per side. |
 | `MAX_STORAGE_BYTES` | `1073741824` (1 GiB) | Quota on the sum of attachment metadata sizes in PostgreSQL, checked transactionally. Not a disk reservation or a bound on Markdown/DB/log/backup growth or orphaned files. |
-| `TRUST_PROXY` | `true` only in production Compose | Trust forwarded metadata **only** when isolated behind the selected Caddy or trusted host-nginx proxy. Direct/local service: `false`. |
+| `TRUST_PROXY` | `true` only in production Compose | Trust forwarded metadata **only** when isolated behind the trusted host-nginx proxy. Direct/local service: `false`. |
 
-Compose also uses `DOMAIN`, `POSTGRES_DB`/`POSTGRES_USER` (both default `conspect`) and required `POSTGRES_PASSWORD`. The host-nginx overlay additionally reads `CONSPECT_IMAGE` (default `conspect:local`) and `CONSPECT_HTTP_PORT` (default `8096`), and pins Go runtime `GOMEMLIMIT=192MiB`, `GOMAXPROCS=1`. Production Compose pins `APP_ADDR=:8080`, `DATA_DIR=/data` and `TRUST_PROXY=true`; changing those variables in `.env` does not override the pins. A direct process defaults to `DATA_DIR=data` and `TRUST_PROXY=false`. Configured byte limits must be positive integers no greater than 1 TiB. Browser owner sessions last **12 hours**, using an `HttpOnly`, `SameSite=Lax` cookie that is `Secure` when `APP_BASE_URL` is HTTPS; no session-duration environment knob is defined here.
+Compose also uses `POSTGRES_DB`/`POSTGRES_USER` (both default `conspect`) and required `POSTGRES_PASSWORD`. `DOMAIN`, if retained in `.env`, is only optional metadata/interpolation for the canonical URL; Compose no longer requires it. The host-nginx overlay additionally reads `CONSPECT_IMAGE` (default `conspect:local`) and `CONSPECT_HTTP_PORT` (default `8096`), and pins Go runtime `GOMEMLIMIT=192MiB`, `GOMAXPROCS=1`. Production Compose pins `APP_ADDR=:8080`, `DATA_DIR=/data` and `TRUST_PROXY=true`; changing those variables in `.env` does not override the pins. A direct process defaults to `DATA_DIR=data` and `TRUST_PROXY=false`. Configured byte limits must be positive integers no greater than 1 TiB. Browser owner sessions last **12 hours**, using an `HttpOnly`, `SameSite=Lax` cookie that is `Secure` when `APP_BASE_URL` is HTTPS; no session-duration environment knob is defined here.
 
 **Keep `APP_SECRET` with every backup.** It is not a disposable deployment/session secret: changing or losing it prevents reproducing existing public share URLs from restored share records. Do not regenerate it during upgrades, restores or container recreation. The secret is not an encryption key for the database; there is no end-to-end encryption. Preserve it securely even if you stop sharing temporarily.
 
@@ -241,15 +225,15 @@ Oversized requests/files return **413**. Review the shared 16 MiB Compose `/tmp`
 
 ## Local development
 
-Use the explicit override; it publishes app and database on **127.0.0.1 only**, disables the proxy unless its `production` profile is explicitly enabled, and sets canonical local HTTP plus `TRUST_PROXY=false`:
+Use the explicit override; it publishes app and database on **127.0.0.1 only** and sets canonical local HTTP plus `TRUST_PROXY=false`. No reverse-proxy container or deployment profile is involved:
 
 ```sh
-# Fill .env secrets/bootstrap values as above; DOMAIN can stay notes.example.com.
+# Fill .env secrets/bootstrap values as above.
 docker compose --env-file .env -f compose.yaml -f deploy/compose.local.yaml up -d --build --wait app db
 curl --fail http://localhost:8080/healthz
 ```
 
-Use `http://localhost:8080`, not a different browser hostname, to match the canonical URL. Plain HTTP bearer use is a **loopback-only development exception**, never a production integration. Never include `deploy/compose.local.yaml` in production commands or combine it with `deploy/compose.nginx.yaml`. Local and both production modes intentionally use the same project/volumes: switch modes deliberately with `down` **without** `-v`, not by running both simultaneously. Disable any leftover production proxy before local testing.
+Use `http://localhost:8080`, not a different browser hostname, to match the canonical URL. Plain HTTP bearer use is a **loopback-only development exception**, never a production integration. Never include `deploy/compose.local.yaml` in production commands or combine it with `deploy/compose.nginx.yaml`. Local development and production intentionally use the same project/volumes: switch modes deliberately with `down` **without** `-v`, not by running both simultaneously. Never use a live production data directory for local experiments.
 
 For a host Go process, start only `db` with the local override, set `DATABASE_URL` to the same credentials at `127.0.0.1:5432`, `APP_ADDR=:8080`, `APP_BASE_URL=http://localhost:8080`, `DATA_DIR=./data`, `TRUST_PROXY=false`, and the required secret/bootstrap values in the process environment; then `go run ./cmd/conspect`. Stop the containerized app first. Goldmark/KaTeX/reader assets remain local; no Node process is needed.
 
@@ -383,7 +367,7 @@ If any operation fails, stop and inspect the safe error before continuing. A `41
 
 ## Backups: local until offsite storage is configured
 
-`deploy/backup.py` and `deploy/restore.py` use the **local Docker daemon**, the fixed `conspect` project, `.env`, and the committed Compose files, regardless of your current directory. They do not SSH, configure cron, upload anywhere or provision external storage. They require a built app image (for tar helpers), a running PostgreSQL 17 `db`, and Python 3.10+ on Linux. No host PostgreSQL client or Python package installation is needed. Run as the deliberately selected deployment account with Docker access and permission to read the mode-0600 `.env`; use the explicit root context for the root-owned host-nginx checkout, not an accidental sudo/context switch. Choose `--nginx` for host nginx, `--local` for local development, or no selector for standalone Caddy. The selectors are mutually exclusive and the same overlay remains attached to every Compose command, including helpers and restarts; no mode is autodetected. Host nginx is never stopped/reloaded by these scripts.
+`deploy/backup.py` and `deploy/restore.py` use the **local Docker daemon**, the fixed `conspect` project, `.env`, and the committed Compose files, regardless of your current directory. They do not SSH, configure cron, upload anywhere or provision external storage. They require a built app image (for tar helpers), a running PostgreSQL 17 `db`, and Python 3.10+ on Linux. No host PostgreSQL client or Python package installation is needed. Run as the deliberately selected deployment account with Docker access and permission to read the mode-0600 `.env`; use the explicit root context for the root-owned host-nginx checkout, not an accidental sudo/context switch. Production uses the nginx overlay **by default**; `--nginx` remains an explicit equivalent for existing commands/timers. Choose `--local` only for local development. The selectors are mutually exclusive and the same overlay remains attached to every Compose command, including helpers and restarts; no mode is autodetected. Host nginx is never stopped/reloaded by these scripts.
 
 The app must be the **only writer**. Do not run another app instance, host Go process, manual SQL writes, image processing job or deployment concurrently. The scripts serialize each other with `deploy/.operations.lock`, but cannot lock your external tools. Avoid ambient environment overrides of `.env`; Compose gives process variables precedence. The scripts check that the app/database configuration agrees, and refuse a URL targeting some other database or an app image/secret changed before the snapshot. For unambiguous target selection, these scripts accept only `sslmode`, `connect_timeout` and `application_name` URL query parameters (not host/user/database overrides). Supported database name/user defaults are `conspect`; use a dedicated database, never `postgres` or template databases.
 
@@ -410,13 +394,13 @@ Bundles are private (directory mode 0700, restrictive umask) but **not encrypted
 
 **This is not offsite backup.** Loss of the VPS/disk can destroy both data and these local bundles. Choose and configure a real external destination, encryption, credentials, transfer verification, monitoring and retention before calling the service production-ready. No external destination is assumed here. The suggested offsite policy is daily snapshots with 14 daily copies **off the VPS**; offsite transfer/encryption/retention is still not configured. The optional local-only timer and 14-snapshot retention below are separate and become active only when the deployer installs/enables them. Plan downtime and disk use; retain a separate verified safety copy before deleting anything. Each Docker operation has a 15-minute limit; large installs may require reviewing that bound in `deploy/operations.py`.
 
-The scripts do not back up TLS volumes or `/etc/letsencrypt`, host nginx site files, Docker images, the source tree, host configuration or unrelated databases/roles. Retain the matching application version/image and deployment files separately. Caddy certificates persist in normal operation; on a new host Caddy can reissue them, subject to DNS/ACME availability and rate limits. PostgreSQL 17 restores do not constitute a major-version upgrade procedure.
+The scripts do not back up `/etc/letsencrypt`, host nginx site files, Docker images, the source tree, host configuration or unrelated databases/roles. Retain the matching application version/image and deployment files separately; host TLS configuration/certificates need their own recovery plan. PostgreSQL 17 restores do not constitute a major-version upgrade procedure.
 
 ### Daily local scheduling (root, opt-in)
 
 The existing host-nginx deployment at `/opt/conspect` can use `deploy/scheduled_backup.py`, `deploy/conspect-backup.service` and `deploy/conspect-backup.timer`. **These are local artifacts only: the agent does not SSH, install/start units or enable the timer.** The parent/deployer must transfer/review them and opt in. Adding this timer does not require rerunning nginx bootstrap, changing Compose/security settings, or reloading host nginx.
 
-The small wrapper holds the existing `operation_lock` across Compose selection, `create_backup` and retention. It accepts the same mutually exclusive `--nginx`/`--local` selectors and `--keep` (positive integer, default **14**). There is deliberately **no output-directory option**: both snapshot and retention are fixed to the real, nonsymlink `ROOT/backups` (`/opt/conspect/backups` on this host).
+The small wrapper holds the existing `operation_lock` across Compose selection, `create_backup` and retention. Production/nginx is the default; it also accepts the same mutually exclusive explicit `--nginx`/`--local` selectors and `--keep` (positive integer, default **14**). There is deliberately **no output-directory option**: both snapshot and retention are fixed to the real, nonsymlink `ROOT/backups` (`/opt/conspect/backups` on this host).
 
 ```sh
 # Manual, root-run rehearsal; this creates a snapshot and applies local retention:
@@ -467,14 +451,14 @@ Verify a real disposable restore separately; a green timer exit is not an offsit
 ### Restore (destructive, offline, guarded)
 
 1. Obtain a trusted complete bundle and the matching app version/image. Make a **separate safety backup of current data** before proceeding.
-2. Restore/review `config.env` as `.env` (`chmod 600 .env`). If the original deployment used environment overrides, recover the effective `APP_SECRET` from `compose.resolved.json`. Keep `POSTGRES_DB`, `POSTGRES_USER` and the **original APP_SECRET**. Database connection credentials must match the target database; do not blindly import old host paths. Review `DOMAIN`/canonical URL for the target host. Do not print the resolved config to shared logs.
+2. Restore/review `config.env` as `.env` (`chmod 600 .env`). If the original deployment used environment overrides, recover the effective `APP_SECRET` from `compose.resolved.json`. Keep `POSTGRES_DB`, `POSTGRES_USER` and the **original APP_SECRET**. Database connection credentials must match the target database; do not blindly import old host paths. Review `APP_BASE_URL` for the target host. Do not print the resolved config to shared logs.
 3. Load the matching app image and start **only** the database if the target is fresh. For host nginx:
 
    ```sh
    docker compose --env-file .env -f compose.yaml -f deploy/compose.nginx.yaml up -d --no-build --pull never --wait db
    ```
 
-   For standalone Caddy omit the second `-f`; for local development use `deploy/compose.local.yaml` instead. Keep the same mode for the restore CLI. Provision certificates/site configuration separately; a database restore does not manage nginx or ACME.
+   For local development use `deploy/compose.local.yaml` instead of the nginx overlay. Keep the same mode for the restore CLI. Provision certificates/site configuration separately; a database restore does not manage nginx or ACME.
 
 4. Run the restore, substituting an actual complete backup directory:
 
@@ -482,20 +466,19 @@ Verify a real disposable restore separately; a green timer exit is not an offsit
    printf 'Complete backup directory to restore: '
    IFS= read -r BACKUP_DIR
    python3 deploy/restore.py "$BACKUP_DIR" --nginx --yes
-   # Use --local INSTEAD for the local stack; omit the selector only for standalone Caddy.
+   # Use --local INSTEAD for the local stack; no selector defaults to nginx.
    ```
 
-The explicit `--yes` acknowledges replacement of **all** data. Before stopping services, restore verifies the file checksums, archive paths/file types, DB identity, original secret fingerprint and dump table of contents. It then stops managed services (app only for `--nginx`, proxy/app otherwise), drops and recreates the dedicated database (terminating connections), restores the dump transactionally, removes **all existing uploads including dotfiles**, and extracts only regular files/directories under `uploads/`, without restoring arbitrary ownership. No stale files are merged in. Symlinks, hard links, path traversal and special files in the backup archive are rejected.
+The explicit `--yes` acknowledges replacement of **all** data. Before stopping services, restore verifies the file checksums, archive paths/file types, DB identity, original secret fingerprint and dump table of contents. It then stops only the app, drops and recreates the dedicated database (terminating connections), restores the dump transactionally, removes **all existing uploads including dotfiles**, and extracts only regular files/directories under `uploads/`, without restoring arbitrary ownership. No stale files are merged in. Symlinks, hard links, path traversal and special files in the backup archive are rejected.
 
-Only after **both** database and uploads succeed does it recreate/start managed services that were previously running, checking readiness before starting a managed Caddy proxy. Host nginx is not a managed service and is untouched. A fresh target's previously absent/stopped services stay stopped; for host nginx explicitly start app/db after success:
+Only after **both** database and uploads succeed does it recreate/start the app if it was previously running, and wait for readiness. PostgreSQL stays running; host nginx is untouched. A fresh target's previously absent/stopped app stays stopped; explicitly start app/db after success:
 
 ```sh
 docker compose --env-file .env -f compose.yaml -f deploy/compose.nginx.yaml up -d --no-build --pull never --wait --wait-timeout 180 app db
 ```
 
-Only the standalone Caddy alternative uses the base Compose command with `app proxy` instead.
 
-Preflight failures leave the current deployment untouched. **Once replacement begins, a restore failure or interruption keeps managed services stopped (only app with `--nginx`).** The database/uploads may be partially replaced; never start the service to “see if it works.” Fix the cause and rerun the full restore from a verified bundle. A lost Docker connection can require manually removing a reported `conspect-ops-*` helper; confirm no helper/writer is running before retrying. The script does not promise atomic filesystem+DB rollback or recovery from disk failure.
+Preflight failures leave the current deployment untouched. **Once replacement begins, a restore failure or interruption keeps the app stopped in both production and local development.** The database/uploads may be partially replaced; never start the service to “see if it works.” Fix the cause and rerun the full restore from a verified bundle. A lost Docker connection can require manually removing a reported `conspect-ops-*` helper; confirm no helper/writer is running before retrying. The script does not promise atomic filesystem+DB rollback or recovery from disk failure.
 
 After success, verify login, project/note counts, Markdown, image rendering/content, ETags, access isolation, and that an existing shared URL still works without logging its token. Restored sessions/API keys/share state and owner password reflect the snapshot: credentials or links revoked **after** that snapshot can become active again. Review/revoke them as appropriate. A backup is not proven recoverable until you have rehearsed restoration on a disposable installation. Daily backups can lose up to a day's changes; there is no point-in-time recovery or Markdown version history here.
 
@@ -510,9 +493,9 @@ python3 deploy/backup.py --nginx
 docker compose --env-file .env -f compose.yaml -f deploy/compose.nginx.yaml up -d --no-build --pull never --wait --wait-timeout 180 app db
 ```
 
-For the standalone Caddy alternative only, omit `--nginx` and the overlay; build/load its approved app image before the base Compose `up`. Never use that base-only launch behind the existing host nginx.
+Normal production updates use the [Actions pipeline](docs/ci-cd.md). The commands above are for reviewed manual recovery; always keep the nginx overlay attached.
 
-Image tags track patch releases, not immutable digests. Review changes, pin approved digests for repeatable production releases, and update Go/Alpine/PostgreSQL/Caddy deliberately; blindly pulling a new PostgreSQL major version against this volume is not supported. Never regenerate `APP_SECRET` during an update. Test restart/recreation and restoration rather than assuming volumes alone are a backup.
+Actions pins application releases by immutable digest; the PostgreSQL and build/runtime base-image tags still track patch releases. Review changes and update Go/Alpine/PostgreSQL deliberately; blindly pulling a new PostgreSQL major version against this volume is not supported. Never regenerate `APP_SECRET` during an update. Test restart/recreation and restoration rather than assuming volumes alone are a backup.
 
 TLS, scoped keys and secret-free proxy logs do not provide end-to-end encryption, offsite durability, an audit history of note contents or protection from a compromised VPS/Docker daemon. Public links are bearer secrets; sharing one deliberately publishes that note to its holders. `noindex` is advisory, not authorization. Application responsibilities still include secure cookies (`HttpOnly`, production `Secure`, appropriate `SameSite`), CSRF protection, a 12-hour session lifetime, rate limits, safe Markdown/KaTeX rendering, no default external-image fetches, authorization on every attachment, revocation checks before commits, and secret-free application/audit logs. These must be verified in Go tests; deployment configuration cannot implement them.
 
@@ -529,7 +512,7 @@ docker compose --env-file .env -f compose.yaml -f deploy/compose.local.yaml conf
 docker compose --env-file .env -f compose.yaml -f deploy/compose.nginx.yaml config --quiet
 ```
 
-`deploy/test_operations.py` uses a fake Docker backend to exercise snapshot order and failure guards; it is **not** a real PostgreSQL/filesystem restore drill. `deploy/test_contract.py` checks effective OpenAPI routes against the Go router, schema references, preservation of app-specific referrer policy at the proxy, and README shell syntax without reading `.env` or `.env.example`. `deploy/test_nginx.py` validates bootstrap/TLS snippet contracts and uses an isolated synthetic env file to check merged ports, profiles, image overrides and resource limits with `docker compose config`; it never reads real `.env`/`.env.example` or starts containers. CLI selection and nginx-mode restore isolation are covered in the operational tests. `deploy/test_scheduled_backup.py` covers retention, failure/symlink/foreign-directory protection, CLI/lock behavior and systemd unit contracts using only synthetic local bundles and fake Docker; it does not read protected local env files, enable timers or run production backups. Host `nginx -t` remains a deployer step after installing the site/certificates, not proof supplied by static contracts. Validate OpenAPI with an OpenAPI 3.1 validator as well as JSON parsing; use an isolated validation environment, not global package installs. Caddy can be checked locally with `caddy validate --config deploy/Caddyfile --adapter caddyfile` when `DOMAIN` is set, or with its container in a no-network/no-published-port test.
+`deploy/test_operations.py` uses a fake Docker backend to exercise snapshot order and failure guards; it is **not** a real PostgreSQL/filesystem restore drill. `deploy/test_contract.py` checks effective OpenAPI routes against the Go router, schema references, the absence of a containerized reverse proxy, and README shell syntax without reading `.env` or `.env.example`. `deploy/test_nginx.py` validates bootstrap/TLS snippet contracts and uses an isolated synthetic env file to check merged ports, profiles, image overrides and resource limits with `docker compose config`; it never reads real `.env`/`.env.example` or starts containers. Production/default and local CLI selection, app-only restore isolation, and nginx's preservation of the app-specific referrer policy are covered by the deployment tests. `deploy/test_scheduled_backup.py` covers retention, failure/symlink/foreign-directory protection, CLI/lock behavior and systemd unit contracts using only synthetic local bundles and fake Docker; it does not read protected local env files, enable timers or run production backups. Host `nginx -t` remains a deployer step after installing the site/certificates, not proof supplied by static contracts. Validate OpenAPI with an OpenAPI 3.1 validator as well as JSON parsing; use an isolated validation environment, not global package installs.
 
 Go checks require Go 1.26; race detection also needs a C compiler and `CGO_ENABLED=1` (the production binary remains `CGO_ENABLED=0`). Build with an explicit output location so the image build and source tree stay separate:
 

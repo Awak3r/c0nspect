@@ -54,8 +54,8 @@ class FakeCompose:
         self.db_user = "conspect"
         self.image_id = "sha256:test-image"
         self.fingerprint = secret_fingerprint(SECRET)
-        self.running = {"app": "running", "proxy": "running"}
-        self.managed_services: tuple[str, ...] = ("app", "proxy")
+        self.running = {"app": "running"}
+        self.managed_services: tuple[str, ...] = ("app",)
         self.events = []
         self.fail_on: str | None = None
 
@@ -76,6 +76,7 @@ class FakeCompose:
             self.running[service] = "exited"
 
     def resume(self, states, *, restored=False):
+        assert set(states) == {"app"}
         for service in self.managed_services:
             if states[service] == "running":
                 self.event("start-" + service)
@@ -179,27 +180,27 @@ class OperationsTests(unittest.TestCase):
     def test_restore_cleans_before_extract_and_restarts_after_both_succeed(self):
         restore.restore_backup(self.compose, self.bundle())
         self.assertEqual(self.compose.events, [
-            "preflight", "dump-list", "stop-proxy", "stop-app", "drop-db", "create-db", "restore-db",
-            "clean-uploads", "extract", "start-app", "start-proxy",
+            "preflight", "dump-list", "stop-app", "drop-db", "create-db", "restore-db",
+            "clean-uploads", "extract", "start-app",
         ])
 
     def test_restore_never_starts_services_that_were_stopped(self):
         directory = self.bundle()
-        self.compose.running = {"app": "exited", "proxy": "absent"}
+        self.compose.running = {"app": "exited"}
         restore.restore_backup(self.compose, directory)
         self.assertFalse(any(event.startswith("start-") for event in self.compose.events))
 
     def test_restore_failures_leave_writers_stopped(self):
         directory = self.bundle()
-        for failure in ("drop-db", "create-db", "restore-db", "clean-uploads", "extract", "start-app", "start-proxy"):
+        for failure in ("drop-db", "create-db", "restore-db", "clean-uploads", "extract", "start-app"):
             with self.subTest(failure=failure):
-                self.compose.running = {"app": "running", "proxy": "running"}
+                self.compose.running = {"app": "running"}
                 self.compose.events.clear()
                 self.compose.fail_on = failure
                 with self.assertRaises(OperationError):
                     restore.restore_backup(self.compose, directory)
-                self.assertEqual(self.compose.running, {"app": "exited", "proxy": "exited"})
-                self.assertEqual(self.compose.events[-2:], ["stop-proxy", "stop-app"])
+                self.assertEqual(self.compose.running, {"app": "exited"})
+                self.assertEqual(self.compose.events[-1], "stop-app")
                 if failure in {"drop-db", "create-db", "restore-db", "clean-uploads", "extract"}:
                     self.assertNotIn("start-app", self.compose.events)
 
@@ -315,6 +316,9 @@ class OperationsTests(unittest.TestCase):
         ):
             compose.helper("tar", "--extract")
         self.assertEqual(run.call_args.args[0][:3], ["docker", "rm", "--force"])
+        arguments = compose.call.call_args.args
+        self.assertEqual(arguments[:8], ("run", "--rm", "--no-deps", "--pull", "never", "-T", "--name", run.call_args.args[0][-1]))
+        self.assertEqual(arguments[8:], ("--user", "10001:10001", "--entrypoint", "tar", "app", "--extract"))
 
     def test_helper_cleanup_failure_is_not_silently_ignored(self):
         compose = Compose.__new__(Compose)
@@ -333,7 +337,7 @@ class OperationsTests(unittest.TestCase):
             self.assertRaises(KeyboardInterrupt),
         ):
             restore.restore_backup(self.compose, directory)
-        self.assertEqual(self.compose.running, {"app": "exited", "proxy": "exited"})
+        self.assertEqual(self.compose.running, {"app": "exited"})
         self.assertNotIn("start-app", self.compose.events)
 
     def test_non_ascii_secret_fingerprint_is_rejected_safely(self):
@@ -363,51 +367,90 @@ class OperationsTests(unittest.TestCase):
             Compose(local=True, nginx=True)
         run.assert_not_called()
 
-    def test_compose_selects_nginx_overlay_and_manages_only_app(self):
+    def configured_compose(self, **selectors):
         self.compose.env_path.chmod(0o600)
         config = self.compose_config("postgres://conspect:password@db:5432/conspect")
-        config["services"]["app"]["image"] = "conspect:nginx-test"
         with (
             patch.object(operations, "ROOT", self.root),
             patch.object(operations, "run_command", side_effect=[json.dumps(config), "sha256:test"]),
         ):
-            compose = Compose(nginx=True)
-        self.assertEqual(compose.command[-2:], ["-f", str(self.root / "deploy" / "compose.nginx.yaml")])
-        self.assertNotIn(str(self.root / "deploy" / "compose.local.yaml"), compose.command)
-        self.assertEqual(compose.managed_services, ("app",))
-        self.assertEqual(compose.image, "conspect:nginx-test")
+            return Compose(**selectors)
 
-    def test_nginx_state_and_restart_ignore_caddy_even_if_running(self):
-        compose = Compose.__new__(Compose)
-        compose.managed_services = ("app",)
-        compose.container = Mock(return_value={"State": {"Status": "running"}})
-        compose.call = Mock()
-        self.assertEqual(compose.states(), {"app": "running"})
-        compose.container.assert_called_once_with("app")
-        compose.resume({"app": "running", "proxy": "running"}, restored=True)
-        compose.call.assert_called_once_with("up", "--detach", "--no-deps", "--wait", "--wait-timeout", "120", "app")
-        compose.call.reset_mock()
-        compose.container.return_value = {"State": {"Status": "exited"}}
-        compose.stop(["app"])
-        compose.call.assert_called_once_with("stop", "--timeout", "30", "app")
+    def test_compose_defaults_to_production_and_all_selectors_manage_only_app(self):
+        for selectors, overlay in (
+            ({}, "nginx"), ({"nginx": True}, "nginx"), ({"local": True}, "local"),
+        ):
+            with self.subTest(selectors=selectors):
+                compose = self.configured_compose(**selectors)
+                self.assertEqual(compose.command, [
+                    "docker", "compose", "--project-directory", str(self.root), "--project-name", "conspect",
+                    "--env-file", str(self.root / ".env"), "-f", str(self.root / "compose.yaml"),
+                    "-f", str(self.root / "deploy" / f"compose.{overlay}.yaml"),
+                ])
+                self.assertEqual(compose.managed_services, ("app",))
 
-    def test_nginx_restore_does_not_stop_or_start_proxy(self):
-        self.compose.managed_services = ("app",)
-        directory = self.bundle()
-        for failure in (None, "extract"):
-            with self.subTest(failure=failure):
-                self.compose.running = {"app": "running", "proxy": "running"}
-                self.compose.events.clear()
-                self.compose.fail_on = failure
-                if failure is None:
-                    restore.restore_backup(self.compose, directory)
-                else:
-                    with self.assertRaises(OperationError):
-                        restore.restore_backup(self.compose, directory)
-                self.assertNotIn("stop-proxy", self.compose.events)
-                self.assertNotIn("start-proxy", self.compose.events)
-                self.assertEqual(self.compose.running["proxy"], "running")
-                self.assertEqual(self.compose.running["app"], "running" if failure is None else "exited")
+    def test_all_selectors_inspect_stop_and_resume_only_app(self):
+        for selectors in ({}, {"nginx": True}, {"local": True}):
+            with self.subTest(selectors=selectors):
+                compose = self.configured_compose(**selectors)
+                compose.container = Mock(return_value={"State": {"Status": "running"}})
+                compose.call = Mock()
+                self.assertEqual(compose.states(), {"app": "running"})
+                compose.container.assert_called_once_with("app")
+                compose.resume({"app": "running"})
+                compose.call.assert_called_once_with("start", "--wait", "--wait-timeout", "120", "app")
+                compose.call.reset_mock()
+                compose.resume({"app": "running"}, restored=True)
+                compose.call.assert_called_once_with("up", "--detach", "--no-deps", "--wait", "--wait-timeout", "120", "app")
+                compose.call.reset_mock()
+                compose.container.return_value = {"State": {"Status": "exited"}}
+                compose.stop(["app"])
+                compose.call.assert_called_once_with("stop", "--timeout", "30", "app")
+
+    def test_all_selectors_never_resume_stopped_or_absent_app(self):
+        for selectors in ({}, {"nginx": True}, {"local": True}):
+            for state in ("exited", "created", "absent"):
+                with self.subTest(selectors=selectors, state=state):
+                    compose = self.configured_compose(**selectors)
+                    compose.container = Mock(return_value=None if state == "absent" else {"State": {"Status": state}})
+                    compose.call = Mock()
+                    states = compose.states()
+                    self.assertEqual(states, {"app": state})
+                    compose.resume(states)
+                    compose.resume(states, restored=True)
+                    compose.call.assert_not_called()
+
+    def test_all_selectors_reject_unstable_app_and_unconfirmed_stop(self):
+        for selectors in ({}, {"nginx": True}, {"local": True}):
+            with self.subTest(selectors=selectors):
+                compose = self.configured_compose(**selectors)
+                compose.container = Mock(return_value={"State": {"Status": "restarting"}})
+                compose.call = Mock()
+                with self.assertRaisesRegex(OperationError, "stabilize"):
+                    compose.states()
+                compose.call.assert_not_called()
+                with self.assertRaisesRegex(OperationError, "Could not verify app stopped"):
+                    compose.stop(["app"])
+
+    def test_all_selectors_reject_live_app_secret_mismatch_before_backup(self):
+        for selectors in ({}, {"nginx": True}, {"local": True}):
+            with self.subTest(selectors=selectors):
+                compose = self.configured_compose(**selectors)
+                app_env = dict(compose.app_env, APP_SECRET="cd" * 32)
+                containers = {
+                    "db": {"State": {"Status": "running"}, "Config": {"Env": [
+                        f"{key}={value}" for key, value in compose.db_env.items()
+                    ]}},
+                    "app": {"Config": {"Env": [f"{key}={value}" for key, value in app_env.items()]},
+                            "Image": compose.image_id},
+                }
+                compose.container = Mock(side_effect=containers.__getitem__)
+                compose.call = Mock(return_value="170006")
+                with self.assertRaisesRegex(OperationError, "APP_SECRET"):
+                    backup.create_backup(compose, self.output)
+                self.assertFalse(self.output.exists())
+                self.assertEqual(compose.call.call_count, 1)
+                self.assertIn("psql", compose.call.call_args.args)
 
     def test_backup_and_restore_cli_preserve_overlay_selection(self):
         for script in (backup, restore):

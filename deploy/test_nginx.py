@@ -1,4 +1,4 @@
-"""Host-nginx contracts. Compose checks use only an owned synthetic env file."""
+"""Host-nginx and local contracts. Compose checks use only a synthetic env file."""
 
 import json
 import os
@@ -75,7 +75,6 @@ class NginxComposeTests(unittest.TestCase):
             raise unittest.SkipTest("Docker Compose plugin is not installed")
         env_file = directory / "synthetic.env"
         env_file.write_text(
-            "DOMAIN=notes.example.com\n"
             "APP_BASE_URL=https://notes.example.com\n"
             + "APP_SECRET=" + "ab" * 32 + "\n"
             "POSTGRES_DB=conspect\nPOSTGRES_USER=conspect\n"
@@ -88,11 +87,13 @@ class NginxComposeTests(unittest.TestCase):
         cls.command = [
             docker, "compose", "--project-directory", str(ROOT), "--project-name", "conspect",
             "--env-file", str(env_file), "-f", str(ROOT / "compose.yaml"),
-            "-f", str(ROOT / "deploy" / "compose.nginx.yaml"),
         ]
 
-    def config(self, *, caddy=False, **overrides):
-        command = self.command + (["--profile", "caddy"] if caddy else [])
+    def config(self, *, local=False, all_profiles=False, **overrides):
+        overlay = "compose.local.yaml" if local else "compose.nginx.yaml"
+        command = self.command + ["-f", str(ROOT / "deploy" / overlay)]
+        if all_profiles:
+            command += ["--profile", "*"]
         result = subprocess.run(
             command + ["config", "--format", "json"], cwd=ROOT,
             env=dict(self.environment, **overrides), capture_output=True, text=True,
@@ -102,7 +103,7 @@ class NginxComposeTests(unittest.TestCase):
         return json.loads(result.stdout)
 
     def test_default_services_and_ports_are_app_db_and_loopback_only(self):
-        services = self.config()["services"]
+        services = self.config(all_profiles=True)["services"]
         self.assertEqual(set(services), {"app", "db"})
         self.assertEqual(services["app"]["image"], "conspect:local")
         ports = services["app"]["ports"]
@@ -126,13 +127,58 @@ class NginxComposeTests(unittest.TestCase):
         ])
         self.assertEqual(services["db"]["volumes"][0]["target"], "/var/lib/postgresql/data")
 
-    def test_caddy_requires_explicit_opt_in_profile(self):
-        proxy = self.config(caddy=True)["services"]["proxy"]
-        self.assertEqual(proxy["profiles"], ["caddy"])
-        self.assertNotIn("proxy", self.config()["services"])
+    def test_all_profiles_still_expose_only_app_and_db(self):
+        for local in (False, True):
+            with self.subTest(local=local):
+                services = self.config(local=local, all_profiles=True)["services"]
+                self.assertEqual(set(services), {"app", "db"})
+                self.assertFalse(any(service.get("profiles") for service in services.values()))
+
+    def test_local_ports_and_trust_are_loopback_development_only(self):
+        config = self.config(local=True, all_profiles=True)
+        services = config["services"]
+        self.assertEqual(set(services), {"app", "db"})
+        for service, port in (("app", 8080), ("db", 5432)):
+            with self.subTest(service=service):
+                ports = services[service]["ports"]
+                self.assertEqual(len(ports), 1)
+                self.assertEqual(ports[0]["host_ip"], "127.0.0.1")
+                self.assertEqual(str(ports[0]["published"]), str(port))
+                self.assertEqual(ports[0]["target"], port)
+        environment = services["app"]["environment"]
+        self.assertEqual(environment["APP_BASE_URL"], "http://localhost:8080")
+        self.assertEqual(environment["TRUST_PROXY"], "false")
+        self.assertNotIn("GOMEMLIMIT", environment)
+        self.assertNotIn("GOMAXPROCS", environment)
+        self.assertNotIn("mem_limit", services["app"])
+        self.assertIsNone(services["db"].get("command"))
+
+    def test_local_ignores_production_image_and_port_overrides(self):
+        services = self.config(
+            local=True, all_profiles=True, CONSPECT_IMAGE="conspect:production-only", CONSPECT_HTTP_PORT="18096",
+        )["services"]
+        self.assertEqual(services["app"]["image"], "conspect:local")
+        self.assertEqual(services["app"]["build"]["context"], str(ROOT))
+        self.assertEqual(str(services["app"]["ports"][0]["published"]), "8080")
+        self.assertEqual(str(services["db"]["ports"][0]["published"]), "5432")
+
+    def test_both_overlays_preserve_project_volumes_and_networks(self):
+        for local in (False, True):
+            with self.subTest(local=local):
+                config = self.config(local=local, all_profiles=True)
+                self.assertEqual(config["name"], "conspect")
+                self.assertEqual(set(config["volumes"]), {"uploads", "db_data"})
+                for name, volume in config["volumes"].items():
+                    self.assertEqual(volume["name"], "conspect_" + name)
+                self.assertEqual(set(config["networks"]), {"frontend", "backend"})
+                for name, network in config["networks"].items():
+                    self.assertEqual(network["name"], "conspect_" + name)
+                self.assertTrue(config["networks"]["backend"]["internal"])
+                self.assertEqual(config["services"]["app"]["volumes"][0]["source"], "uploads")
+                self.assertEqual(config["services"]["db"]["volumes"][0]["source"], "db_data")
 
     def test_image_and_port_overrides_do_not_publish_database(self):
-        services = self.config(CONSPECT_IMAGE="conspect:nginx-test", CONSPECT_HTTP_PORT="18096")["services"]
+        services = self.config(all_profiles=True, CONSPECT_IMAGE="conspect:nginx-test", CONSPECT_HTTP_PORT="18096")["services"]
         self.assertEqual(services["app"]["image"], "conspect:nginx-test")
         self.assertEqual(services["app"]["ports"][0]["host_ip"], "127.0.0.1")
         self.assertEqual(str(services["app"]["ports"][0]["published"]), "18096")

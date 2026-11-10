@@ -390,7 +390,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_inherited_compose_and_docker_overrides_are_not_used(self):
         overrides = {
-            "COMPOSE_FILE": "/outside/compose.yaml", "COMPOSE_PROFILES": "caddy",
+            "COMPOSE_FILE": "/outside/compose.yaml", "COMPOSE_PROFILES": "unwanted-profile",
             "COMPOSE_PROJECT_NAME": "other", "CONSPECT_IMAGE": "mutable:latest",
             "DOCKER_CONFIG": "/outside/credentials", "DOCKER_HOST": "ssh://outside",
             "DOCKER_CONTEXT": "outside",

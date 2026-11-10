@@ -22,9 +22,3 @@ services:
       - work_mem=2MB
       - -c
       - maintenance_work_mem=32MB
-
-  # Never enable this profile on the host-nginx deployment: ports 80/443 belong
-  # to the existing host service. Default `up` starts only app/db.
-  proxy:
-    profiles:
-      - caddy

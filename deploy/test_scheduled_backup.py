@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import backup
 import scheduled_backup
@@ -26,7 +26,6 @@ class ScheduledBackupTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.previous_umask = os.umask(0o077)
         self.compose = FakeCompose(self.root)
-        self.compose.managed_services = ("app",)
         self.output = self.root / "backups"
         self.start = datetime.fromisoformat("2026-10-01T03:30:00+00:00")
         self.stdout = io.StringIO()

@@ -17,6 +17,8 @@ The VPS does not compile Go, receive a full Docker archive, pull a new PostgreSQ
 
 Use an existing, healthy **host-nginx** installation with root-owned `/opt/conspect`, `deploy/`, deployment sources, and a root-owned mode-0600 `.env`. Follow the README provisioning/TLS runbook first. Docker Compose, Python 3.10+, GNU tar on the host, and outbound HTTPS access to GHCR are required. Keep the Compose project name `conspect`. App/database volumes and the stable `APP_SECRET` remain unchanged.
 
+The only supported production topology is **host nginx + app/db**; no reverse-proxy container or deployment profile is shipped. Keep `deploy/compose.nginx.yaml` on all production Compose commands. Backup/restore/scheduled-backup scripts select that overlay by default; explicit `--nginx` remains compatible with existing systemd units and commands. Local development still uses `--local` and `deploy/compose.local.yaml`, never combined with the production overlay. Removing the former container-proxy configuration does not delete existing Docker containers/volumes or modify host TLS configuration; review any legacy resources manually, never use `down -v` on live data.
+
 In GitHub **Settings → Environments → production**, restrict deployment branches to `main` and configure:
 
 | Type | Name | Value |
