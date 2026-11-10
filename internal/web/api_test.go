@@ -36,6 +36,13 @@ type apiTestUploadResult struct {
 	Markdown   string           `json:"markdown"`
 }
 
+func apiTestNotesEqual(got, want store.Note) bool {
+	// pgx may use time.Local while JSON uses time.UTC for the same instant.
+	got.CreatedAt, want.CreatedAt = got.CreatedAt.UTC(), want.CreatedAt.UTC()
+	got.UpdatedAt, want.UpdatedAt = got.UpdatedAt.UTC(), want.UpdatedAt.UTC()
+	return reflect.DeepEqual(got, want)
+}
+
 func TestAPISchemaAndBearerAuthentication(t *testing.T) {
 	app, db := newTestApp(t)
 	project := apiTestProject(t, db, "Private project")
@@ -281,8 +288,8 @@ func TestAPICreateNoteRequiresProjectGrant(t *testing.T) {
 	}
 	apiTestNoSecrets(t, response, writer, tokenHash(writer), app.cfg.DataDir)
 	stored, err := db.Note(t.Context(), created.ID)
-	if err != nil || !reflect.DeepEqual(stored, created.Note) {
-		t.Fatalf("persisted note = %+v, err=%v", stored, err)
+	if err != nil || !apiTestNotesEqual(stored, created.Note) {
+		t.Fatalf("persisted note = %#v, created note = %#v, err=%v", stored, created.Note, err)
 	}
 	apiTestStatus(t, apiTestRequest(app, "GET", response.Header().Get("Location"), writer, nil, nil), 403)
 	for _, tc := range []struct {
@@ -375,7 +382,7 @@ func TestAPIStrictJSONAndByteLimits(t *testing.T) {
 		}
 	}
 	current, err := db.Note(t.Context(), note.ID)
-	if err != nil || !reflect.DeepEqual(current, note) {
+	if err != nil || !apiTestNotesEqual(current, note) {
 		t.Fatalf("invalid request changed original note: %+v, %v", current, err)
 	}
 	notes, err := db.Notes(t.Context(), project.ID, "", "modified")
@@ -513,7 +520,7 @@ func TestAPIAttachmentsAreNoteBoundAndDoNotMutateText(t *testing.T) {
 	}
 	apiTestNoSecrets(t, response, uploadOnly, tokenHash(uploadOnly), app.cfg.DataDir, attachment.ID+".png")
 	stored, err := db.Note(t.Context(), note.ID)
-	if err != nil || !reflect.DeepEqual(stored, note) {
+	if err != nil || !apiTestNotesEqual(stored, note) {
 		t.Fatalf("upload modified note text, metadata or version: %+v, %v", stored, err)
 	}
 	for _, token := range []string{imageOnly, notesOnly} {
@@ -575,7 +582,7 @@ func TestAPIAttachmentsAreNoteBoundAndDoNotMutateText(t *testing.T) {
 		t.Fatalf("failed upload leaked a file: before=%d after=%d err=%v", len(beforeFiles), len(afterFiles), err)
 	}
 	stored, err = db.Note(t.Context(), note.ID)
-	if err != nil || !reflect.DeepEqual(stored, note) {
+	if err != nil || !apiTestNotesEqual(stored, note) {
 		t.Fatalf("failed upload modified note: %+v, %v", stored, err)
 	}
 }
@@ -784,7 +791,7 @@ func TestAPINoDeleteShareOrAdministration(t *testing.T) {
 		apiTestNoSecrets(t, response, token, tokenHash(token))
 	}
 	stored, err := db.Note(t.Context(), note.ID)
-	if err != nil || !reflect.DeepEqual(stored, note) {
+	if err != nil || !apiTestNotesEqual(stored, note) {
 		t.Fatalf("unsupported API operation mutated note: %+v, %v", stored, err)
 	}
 }
