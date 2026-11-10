@@ -31,10 +31,13 @@ def run_command(arguments, *, stdin=None, stdout=None, timeout=900):
         raise OperationError("Docker command could not finish; check Docker and available disk space.") from error
     if result.returncode:
         # Docker/pg_restore output can contain configuration or private note data.
-        raise OperationError(
+        error = OperationError(
             f"Docker command failed (exit {result.returncode}); output withheld to protect secrets/data. "
             "Inspect the service locally before retrying."
         )
+        # Callers may classify a registry error without logging raw private output.
+        error.command_stderr = result.stderr
+        raise error
     return result.stdout.decode("utf-8") if stdout is None else ""
 
 

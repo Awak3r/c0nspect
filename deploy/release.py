@@ -90,8 +90,27 @@ def pull_image(image, username, token):
         with tempfile.TemporaryFile() as secret:
             secret.write((token + "\n").encode())
             secret.seek(0)
-            run_command(command + ["login", "ghcr.io", "--username", username, "--password-stdin"], stdin=secret)
-        run_command(command + ["pull", "--platform", "linux/amd64", image])
+            registry_command(command + ["login", "ghcr.io", "--username", username, "--password-stdin"], "login", stdin=secret)
+        registry_command(command + ["pull", "--platform", "linux/amd64", image], "pull")
+
+
+def registry_command(command, stage, **streams):
+    try:
+        return run_command(command, **streams)
+    except OperationError as error:
+        output = getattr(error, "command_stderr", b"").decode("utf-8", errors="replace").lower()
+        reason = "registry/network operation failed"
+        for terms, description in (
+            (("denied", "unauthorized", "forbidden"), "registry permission denied"),
+            (("not found", "manifest unknown"), "image/digest not found or not readable"),
+            (("timeout", "deadline exceeded"), "registry connection timed out"),
+            (("certificate", "x509"), "registry TLS certificate failure"),
+            (("no such file", "permission denied", "error saving credentials"), "Docker credential-directory failure"),
+        ):
+            if any(term in output for term in terms):
+                reason = description
+                break
+        raise OperationError(f"GHCR {stage} failed: {reason}; no application update was started.") from error
 
 
 def compose_command(root, source=None):

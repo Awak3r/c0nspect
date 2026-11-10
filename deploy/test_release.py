@@ -549,6 +549,20 @@ class ReleaseHelperTests(unittest.TestCase):
                 if token:
                     self.assertNotIn(token, str(raised.exception))
 
+    def test_registry_errors_classify_stage_without_leaking_private_output(self):
+        for output, reason in ((b"denied: secret-token", "permission denied"),
+                               (b"manifest unknown secret-token", "not found"),
+                               (b"x509: secret-token", "certificate"),
+                               (b"unexpected secret-token", "registry/network")):
+            error = OperationError("private Docker failure")
+            error.command_stderr = output
+            with patch.object(release, "run_command", side_effect=error):
+                with self.assertRaises(OperationError) as raised:
+                    release.registry_command(["docker", "pull", IMAGE], "pull")
+                self.assertIn("GHCR pull failed", str(raised.exception))
+                self.assertIn(reason, str(raised.exception))
+                self.assertNotIn("secret-token", str(raised.exception))
+
     def test_atomic_write_is_private_and_replaces_link_instead_of_following_it(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
