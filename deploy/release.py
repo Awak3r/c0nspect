@@ -14,6 +14,7 @@ import tempfile
 
 import operations
 from backup import create_backup
+from check_mcp import check_mcp, mcp_base_url
 from operations import Compose, OperationError, operation_lock, run_command
 
 IMAGE_PATTERN = r"ghcr\.io/awak3r/c0nspect@sha256:[0-9a-f]{64}"
@@ -140,7 +141,8 @@ def release(source, root, image, username, revision, token):
         raise OperationError("Release is missing the host-nginx overlay.")
     # Ignore inherited overrides: .env is the installation's source of truth.
     for name in list(os.environ):
-        if name.startswith("COMPOSE_") or name in {"CONSPECT_IMAGE", "DOCKER_CONFIG", "DOCKER_HOST", "DOCKER_CONTEXT"}:
+        if name.startswith("COMPOSE_") or name in {"CONSPECT_IMAGE", "DOCKER_CONFIG", "DOCKER_HOST", "DOCKER_CONTEXT",
+                                                               "MCP_ENABLED", "MCP_API_URL", "APP_BASE_URL"}:
             os.environ.pop(name, None)
     operations.ROOT = root
     with operation_lock():
@@ -166,7 +168,8 @@ def release(source, root, image, username, revision, token):
         previous_image = os.environ.get("CONSPECT_IMAGE")
         try:
             os.environ["CONSPECT_IMAGE"] = image
-            run_command(compose_command(root, source) + ["config", "--quiet"])
+            config = json.loads(run_command(compose_command(root, source) + ["config", "--format", "json"]))
+            mcp_url = mcp_base_url(config["services"]["app"]["environment"])
         finally:
             if previous_image is None:
                 os.environ.pop("CONSPECT_IMAGE", None)
@@ -198,6 +201,8 @@ def release(source, root, image, username, revision, token):
             # Only replace app: never recreate PostgreSQL, rebuild, or pull mutable DB tags.
             run_command(command + ["up", "--detach", "--no-deps", "--no-build", "--pull", "never",
                                    "--wait", "--wait-timeout", "180", "app"], timeout=240)
+            if mcp_url is not None:
+                check_mcp(mcp_url)
         except BaseException:
             state["status"] = "failed"
             if activated:

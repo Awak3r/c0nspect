@@ -114,6 +114,14 @@ class NginxComposeTests(unittest.TestCase):
         self.assertFalse(services["db"].get("ports"))
         self.assertEqual(services["app"]["environment"]["TRUST_PROXY"], "true")
 
+    def test_remote_mcp_defaults_to_production_only_and_can_be_disabled(self):
+        production = self.config()["services"]["app"]["environment"]
+        self.assertEqual(production["MCP_ENABLED"], "true")
+        self.assertEqual(production["MCP_API_URL"], "http://127.0.0.1:8080")
+        self.assertEqual(self.config(local=True)["services"]["app"]["environment"]["MCP_ENABLED"], "false")
+        disabled = self.config(MCP_ENABLED="false")["services"]["app"]["environment"]
+        self.assertEqual(disabled["MCP_ENABLED"], "false")
+
     def test_resource_limits_and_postgresql_settings(self):
         services = self.config()["services"]
         self.assertEqual(int(services["app"]["mem_limit"]), 256 * 1024 * 1024)

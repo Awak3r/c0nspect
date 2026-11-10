@@ -446,7 +446,20 @@ func (a *App) keyData(r *http.Request) (pageData, error) {
 	if err != nil {
 		return pageData{}, err
 	}
-	return pageData{Title: "API-ключи для MCP", Keys: keys, Projects: projects, Notes: notes}, nil
+	showRevoked := r.URL.Query().Get("show_revoked") == "1"
+	return pageData{Title: "API-ключи для MCP", Keys: visibleAPIKeys(keys, showRevoked), ShowRevoked: showRevoked, Projects: projects, Notes: notes}, nil
+}
+func visibleAPIKeys(keys []store.APIKey, showRevoked bool) []store.APIKey {
+	if showRevoked {
+		return keys
+	}
+	visible := make([]store.APIKey, 0, len(keys))
+	for _, key := range keys {
+		if key.RevokedAt == nil {
+			visible = append(visible, key)
+		}
+	}
+	return visible
 }
 func (a *App) keysPage(w http.ResponseWriter, r *http.Request) {
 	data, err := a.keyData(r)

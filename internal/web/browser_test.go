@@ -1037,7 +1037,7 @@ func browserTestReadOnly(t *testing.T, response *httptest.ResponseRecorder, publ
 		}
 	}
 	for _, script := range browserTestElements(doc, "script") {
-		if !slices.Contains([]string{"/assets/reader/katex.min.js", "/assets/reader/reader.js"}, browserTestAttr(script, "src")) || strings.TrimSpace(browserTestText(script)) != "" {
+		if !slices.Contains([]string{readerAsset("katex.min.js"), readerAsset("reader.js")}, browserTestAttr(script, "src")) || strings.TrimSpace(browserTestText(script)) != "" {
 			t.Error("reader contains remote or inline script")
 		}
 	}
@@ -1163,20 +1163,20 @@ func TestBrowserReadersSharingAndAttachmentAuthorization(t *testing.T) {
 			for _, script := range browserTestElements(doc, "script") {
 				assets = append(assets, browserTestAttr(script, "src"))
 			}
-			want := []string{stylesheetURL(), "/assets/reader/katex.min.css", "/assets/reader/syntax.css", "/assets/reader/katex.min.js", "/assets/reader/reader.js"}
+			want := []string{stylesheetURL(), readerAsset("katex.min.css"), readerAsset("syntax.css"), readerAsset("katex.min.js"), readerAsset("reader.js")}
 			if !reflect.DeepEqual(assets, want) {
 				t.Errorf("reader assets = %v, want only local math/code assets %v", assets, want)
 			}
 		})
 	}
 
-	for _, path := range []string{"/assets/app.css", "/assets/reader/katex.min.css", "/assets/reader/syntax.css", "/assets/reader/katex.min.js", "/assets/reader/reader.js"} {
+	for _, path := range []string{stylesheetURL(), readerAsset("katex.min.css"), readerAsset("syntax.css"), readerAsset("katex.min.js"), readerAsset("reader.js"), "/assets/app.css", "/assets/reader/katex.min.css", "/assets/reader/syntax.css", "/assets/reader/katex.min.js", "/assets/reader/reader.js"} {
 		asset := anonymous.request(t, "GET", path, nil, nil)
 		browserTestStatus(t, asset, 200)
 		if asset.Body.Len() == 0 || strings.HasPrefix(asset.Header().Get("Content-Type"), "text/html") {
 			t.Errorf("asset %s is empty or an HTML error", path)
 		}
-		if path == "/assets/reader/katex.min.css" {
+		if path == readerAsset("katex.min.css") || path == "/assets/reader/katex.min.css" {
 			urls := regexp.MustCompile(`url\(([^)]+)\)`).FindAllStringSubmatch(asset.Body.String(), -1)
 			if len(urls) == 0 {
 				t.Fatal("KaTeX CSS has no font assets")
@@ -1188,7 +1188,7 @@ func TestBrowserReadersSharingAndAttachmentAuthorization(t *testing.T) {
 					t.Fatalf("KaTeX CSS uses a remote/invalid font URL: %q", match[1])
 				}
 				font := base.ResolveReference(u).Path
-				if !strings.HasPrefix(font, "/assets/reader/fonts/") {
+				if !strings.HasPrefix(font, strings.TrimSuffix(path, "katex.min.css")+"fonts/") {
 					t.Fatalf("KaTeX font is outside local assets: %q", font)
 				}
 				response := anonymous.request(t, "GET", font, nil, nil)
@@ -1728,7 +1728,16 @@ func TestBrowserAPIKeyUISecretScopesExpirationAndRevocation(t *testing.T) {
 	}
 	page = b.request(t, "GET", "/settings/api-keys", nil, nil)
 	browserTestStatus(t, page, 200)
+	browserTestNoPrivateValues(t, page, secret, key.TokenHash, key.Name)
+	if !browserTestHasLink(browserTestDocument(t, page), "/settings/api-keys?show_revoked=1") {
+		t.Error("default key list omitted show-revoked toggle")
+	}
+	page = b.request(t, "GET", "/settings/api-keys?show_revoked=1", nil, nil)
+	browserTestStatus(t, page, 200)
 	browserTestNoPrivateValues(t, page, secret, key.TokenHash)
+	if !strings.Contains(browserTestText(browserTestDocument(t, page)), key.Name) || !browserTestHasLink(browserTestDocument(t, page), "/settings/api-keys") {
+		t.Error("explicit revoked-key view omitted the key or hide toggle")
+	}
 	for _, form := range browserTestElements(browserTestDocument(t, page), "form") {
 		if browserTestAttr(form, "action") == revokePath {
 			t.Error("revoked key still has an active revoke control")

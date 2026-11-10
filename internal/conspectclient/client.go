@@ -31,6 +31,7 @@ type Client struct {
 	mu        sync.RWMutex
 	closed    bool
 	origin    string
+	apiOrigin string
 	apiKey    string
 	http      *http.Client
 	transport *http.Transport
@@ -63,6 +64,7 @@ func New(cfg Config) (*Client, error) {
 	}
 	return &Client{
 		origin:    cfg.BaseURL,
+		apiOrigin: cfg.APIBaseURL,
 		apiKey:    key,
 		root:      root,
 		transport: transport,
@@ -244,7 +246,11 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	if ctx == nil {
 		return nil, errors.New("a request context is required")
 	}
-	endpoint := c.origin + "/api/v1" + path
+	origin := c.apiOrigin
+	if origin == "" {
+		origin = c.origin
+	}
+	endpoint := origin + "/api/v1" + path
 	if len(query) != 0 {
 		endpoint += "?" + query.Encode()
 	}

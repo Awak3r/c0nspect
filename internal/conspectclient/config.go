@@ -41,6 +41,11 @@ func prepareConfig(cfg Config) (Config, string, error) {
 		return Config{}, "", err
 	}
 	cfg.BaseURL = origin
+	if cfg.APIBaseURL == "" {
+		cfg.APIBaseURL = origin
+	} else if cfg.APIBaseURL, err = normalizeOrigin(cfg.APIBaseURL); err != nil {
+		return Config{}, "", err
+	}
 	if (cfg.APIKey == "") == (cfg.APIKeyFile == "") {
 		return Config{}, "", errors.New("configure exactly one of CONSPECT_API_KEY or CONSPECT_API_KEY_FILE")
 	}

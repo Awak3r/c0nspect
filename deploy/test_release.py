@@ -65,6 +65,7 @@ class ReleaseTests(unittest.TestCase):
         self.events = []
         self.commands = []
         self.failures = set()
+        self.app_env = {"APP_BASE_URL": "https://notes.example.com", "MCP_ENABLED": "true"}
         self.locked = False
         self.on_lock = None
         self.app_state = "running"
@@ -108,6 +109,7 @@ class ReleaseTests(unittest.TestCase):
         self.snapshot = self.enter(patch.object(release, "create_backup", side_effect=self.fake_backup))
         self.docker = self.enter(patch.object(release, "run_command", side_effect=self.fake_docker))
         self.enter(patch.object(release, "operation_lock", side_effect=self.operation_lock))
+        self.mcp_check = self.enter(patch.object(release, "check_mcp", side_effect=lambda url: self.event("mcp-check")))
         self.real_atomic_write = release.atomic_write
         self.enter(patch.object(release, "atomic_write", side_effect=self.record_write))
 
@@ -179,13 +181,15 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(command[command.index("--project-directory") + 1], str(self.root))
         self.assertEqual(command[command.index("--project-name") + 1], "conspect")
         self.assertEqual(command[command.index("--env-file") + 1], str(self.env))
-        if command[-2:] == ["config", "--quiet"]:
-            incoming = str(self.source / "compose.yaml") in command
-            if incoming:
-                self.assertEqual(os.environ.get("CONSPECT_IMAGE"), IMAGE)
-                self.assert_installed_files(self.old_files)
-                self.assertEqual(self.env.read_text(encoding="utf-8"), ENV)
-            self.event("source-config" if incoming else "live-config")
+        if command[-3:] == ["config", "--format", "json"]:
+            self.assertIn(str(self.source / "compose.yaml"), command)
+            self.assertEqual(os.environ.get("CONSPECT_IMAGE"), IMAGE)
+            self.assert_installed_files(self.old_files)
+            self.assertEqual(self.env.read_text(encoding="utf-8"), ENV)
+            self.event("source-config")
+            return json.dumps({"services": {"app": {"environment": self.app_env}}})
+        elif command[-2:] == ["config", "--quiet"]:
+            self.event("live-config")
         elif "up" in command:
             self.assertEqual(command[len(release.compose_command(self.root)):], [
                 "up", "--detach", "--no-deps", "--no-build", "--pull", "never",
@@ -238,7 +242,8 @@ class ReleaseTests(unittest.TestCase):
         ])
         self.assertLess(self.events.index("backup-resume"), self.events.index("write-compose.yaml"))
         self.assertLess(self.events.index("live-config"), self.events.index("up"))
-        self.assertEqual(self.events[-3:], ["up", "state-healthy", "unlock"])
+        self.assertEqual(self.events[-4:], ["up", "mcp-check", "state-healthy", "unlock"])
+        self.mcp_check.assert_called_once_with("https://notes.example.com")
         self.compose_factory.assert_called_once_with(nginx=True)
         self.compose.preflight.assert_called_once_with(backup=True)
         self.snapshot.assert_called_once_with(self.compose, self.root / "backups")
@@ -352,6 +357,40 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(self.events.count("up"), 1)
         self.assertIn("App left offline", self.stderr.getvalue())
 
+    def test_mcp_discovery_failure_stops_new_app_and_keeps_verified_backup(self):
+        self.failures.add("mcp-check")
+        with self.assertRaisesRegex(OperationError, "mcp-check"):
+            self.invoke()
+        self.assertEqual(self.events[-5:], ["up", "mcp-check", "stop", "state-failed", "unlock"])
+        self.assertEqual(self.app_state, "exited")
+        self.assertEqual(self.env.read_text(), release.replace_image(ENV, IMAGE))
+        state = json.loads((self.root / ".release.json").read_text())
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["backup"], str(self.backup))
+
+    def test_invalid_mcp_configuration_aborts_before_backup_and_activation(self):
+        for override in ({"APP_BASE_URL": "http://notes.example.com"},
+                         {"APP_BASE_URL": "https://notes.example.com/path"},
+                         {"MCP_ENABLED": "not-a-boolean"}):
+            with self.subTest(override=override):
+                self.app_env = {"APP_BASE_URL": "https://notes.example.com", "MCP_ENABLED": "true", **override}
+                with self.assertRaises(OperationError):
+                    self.invoke()
+                self.snapshot.assert_not_called()
+                self.mcp_check.assert_not_called()
+                self.assert_not_activated()
+
+    def test_trailing_slash_in_existing_origin_is_normalized_before_public_check(self):
+        self.app_env["APP_BASE_URL"] += "/"
+        self.invoke()
+        self.mcp_check.assert_called_once_with("https://notes.example.com")
+
+    def test_explicitly_disabled_mcp_skips_public_oauth_check(self):
+        self.app_env["MCP_ENABLED"] = "false"
+        self.invoke()
+        self.mcp_check.assert_not_called()
+        self.assertEqual(self.events[-3:], ["up", "state-healthy", "unlock"])
+
     def test_stop_failure_warns_without_attempting_rollback(self):
         self.failures.update({"up", "stop"})
         with self.assertRaisesRegex(OperationError, "injected up failure"):
@@ -383,7 +422,8 @@ class ReleaseTests(unittest.TestCase):
         # Model a restore finishing after release starts, before it owns the lock.
         self.on_lock = lambda: self.env.write_text(updated_env, encoding="utf-8")
         # Only orchestration matters here; don't enforce the other tests' old ENV.
-        with patch.object(release, "run_command", return_value=""):
+        config = json.dumps({"services": {"app": {"environment": self.app_env}}})
+        with patch.object(release, "run_command", return_value=config):
             self.invoke()
         self.assertEqual((self.backup / "config.env").read_text(encoding="utf-8"), updated_env)
         self.assertEqual(self.env.read_text(encoding="utf-8"), release.replace_image(updated_env, IMAGE))
@@ -393,7 +433,8 @@ class ReleaseTests(unittest.TestCase):
             "COMPOSE_FILE": "/outside/compose.yaml", "COMPOSE_PROFILES": "unwanted-profile",
             "COMPOSE_PROJECT_NAME": "other", "CONSPECT_IMAGE": "mutable:latest",
             "DOCKER_CONFIG": "/outside/credentials", "DOCKER_HOST": "ssh://outside",
-            "DOCKER_CONTEXT": "outside",
+            "DOCKER_CONTEXT": "outside", "MCP_ENABLED": "false",
+            "MCP_API_URL": "http://outside", "APP_BASE_URL": "https://outside.example.com",
         }
         os.environ.update(overrides)
         self.invoke()

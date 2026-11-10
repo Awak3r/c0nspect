@@ -19,6 +19,9 @@ type pageData struct {
 	Entries                                                       []noteEntry
 	Note                                                          store.Note
 	Keys                                                          []store.APIKey
+	ShowRevoked                                                   bool
+	LoginNext, OAuthClientName, OAuthClientID, OAuthRequest       string
+	OAuthScopes                                                   []string
 	// Content must come from the Markdown renderer, which sanitizes its output.
 	Content template.HTML
 }
@@ -109,6 +112,7 @@ const pageTemplates = `
     <h1 id="login-title">Вход</h1>
     {{template "notices" .}}
     <form class="stack" method="post" action="/login">
+      {{if .LoginNext}}<input type="hidden" name="next" value="{{.LoginNext}}">{{end}}
       <div>
         <label for="username">Имя пользователя</label>
         <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required>
@@ -400,10 +404,10 @@ const pageTemplates = `
   <meta name="referrer" content="no-referrer">
   <title>{{.Note.Title}}</title>
   <link rel="stylesheet" href="{{stylesheet}}">
-  <link rel="stylesheet" href="/assets/reader/katex.min.css">
-  <link rel="stylesheet" href="/assets/reader/syntax.css">
-  <script defer src="/assets/reader/katex.min.js"></script>
-  <script defer src="/assets/reader/reader.js"></script>
+  <link rel="stylesheet" href="{{readerAsset "katex.min.css"}}">
+  <link rel="stylesheet" href="{{readerAsset "syntax.css"}}">
+  <script defer src="{{readerAsset "katex.min.js"}}"></script>
+  <script defer src="{{readerAsset "reader.js"}}"></script>
 </head>
 <body class="reader">
 <main class="reader-shell">
@@ -537,7 +541,13 @@ const pageTemplates = `
     </form>
   </details>
   <section class="section" aria-labelledby="keys-title">
-    <div class="section-heading"><h2 id="keys-title">Выданные ключи</h2><span class="library-total">Всего: {{len .Keys}}</span></div>
+    <div class="section-heading">
+      <h2 id="keys-title">Выданные ключи</h2>
+      <div class="actions">
+        <span class="library-total">Показано: {{len .Keys}}</span>
+        {{if .ShowRevoked}}<a href="/settings/api-keys">Скрыть отозванные</a>{{else}}<a href="/settings/api-keys?show_revoked=1">Показать отозванные</a>{{end}}
+      </div>
+    </div>
 
     <div class="key-list">
     {{range .Keys}}
@@ -562,10 +572,35 @@ const pageTemplates = `
       </div>
     </details>
     {{else}}
-    <p class="empty-state">Ключей нет.</p>
+    <p class="empty-state">Список пуст.</p>
     {{end}}
     </div>
   </section>
+</main>
+</body>
+</html>{{end}}
+
+{{define "oauth-consent"}}{{template "head" .}}
+<body>
+{{template "header" .}}
+<main class="shell narrow" id="main">
+  <div class="page-heading"><h1>Подключить ChatGPT</h1><p>{{.OAuthClientName}}</p><p class="item-meta">Клиент: <code>{{.OAuthClientID}}</code></p></div>
+  {{template "notices" .}}
+  <form class="stack" method="post" action="/oauth/authorize">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="request" value="{{.OAuthRequest}}">
+    <fieldset><legend>Разрешения</legend>
+      {{range .OAuthScopes}}<label class="check"><input type="checkbox" name="scopes" value="{{.}}"{{if eq . "notes:read"}} checked{{end}}> <span>{{if eq . "notes:read"}}Читать конспекты{{else if eq . "notes:write"}}Создавать и изменять конспекты{{else if eq . "attachments:read"}}Читать изображения{{else}}Загружать изображения{{end}} <code>{{.}}</code></span></label>{{end}}
+    </fieldset>
+    <fieldset><legend>Проекты</legend><div class="choice-list">
+      {{range .Projects}}<label class="check"><input type="checkbox" name="projects" value="{{.ID}}"> <span>{{.Name}}</span></label>{{else}}<p>Проектов нет.</p>{{end}}
+    </div><p class="hint">Включая будущие конспекты выбранных проектов.</p></fieldset>
+    <details class="disclosure"><summary>Отдельные конспекты</summary><div class="choice-list">
+      {{range .Notes}}<label class="check"><input type="checkbox" name="notes" value="{{.ID}}"> <span>{{.Title}}</span></label>{{else}}<p>Конспектов нет.</p>{{end}}
+    </div></details>
+    <p class="hint">Выбранные материалы будут передаваться в ChatGPT. Доступ можно отозвать в API-ключах.</p>
+    <div class="actions"><button type="submit" name="decision" value="allow">Разрешить</button><button class="button-quiet" type="submit" name="decision" value="deny">Отмена</button></div>
+  </form>
 </main>
 </body>
 </html>{{end}}

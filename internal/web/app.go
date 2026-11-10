@@ -33,6 +33,8 @@ type Config struct {
 	MaxMarkdownBytes int64
 	MaxImageBytes    int64
 	MaxStorageBytes  int64
+	MCPEnabled       bool
+	MCPAPIURL        string
 }
 
 type App struct {
@@ -42,6 +44,7 @@ type App struct {
 	templates *template.Template
 	mux       *http.ServeMux
 	limits    *limiter
+	oauth     store.OAuthRepository
 }
 
 type requestKey struct{}
@@ -78,11 +81,28 @@ func New(db store.Repository, cfg Config) (*App, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "uploads"), 0700); err != nil {
 		return nil, fmt.Errorf("create uploads directory: %w", err)
 	}
-	t, err := template.New("pages").Funcs(template.FuncMap{"date": func(t time.Time) string { return t.UTC().Format("02.01.2006 15:04") }, "join": strings.Join, "stylesheet": stylesheetURL, "now": time.Now}).Parse(pageTemplates)
+	t, err := template.New("pages").Funcs(template.FuncMap{"date": func(t time.Time) string { return t.UTC().Format("02.01.2006 15:04") }, "join": strings.Join, "stylesheet": stylesheetURL, "readerAsset": readerAsset, "now": time.Now}).Parse(pageTemplates)
 	if err != nil {
 		return nil, err
 	}
 	a := &App{db: db, cfg: cfg, renderer: render.New(), templates: t, mux: http.NewServeMux(), limits: &limiter{entries: map[string]window{}}}
+	if cfg.MCPEnabled {
+		var ok bool
+		a.oauth, ok = db.(store.OAuthRepository)
+		if !ok {
+			return nil, errors.New("remote MCP requires an OAuth repository")
+		}
+		if a.cfg.MCPAPIURL == "" {
+			a.cfg.MCPAPIURL = "http://127.0.0.1:8080"
+		}
+		apiURL, parseErr := url.Parse(a.cfg.MCPAPIURL)
+		if parseErr != nil || apiURL.Scheme != "http" || apiURL.User != nil || apiURL.RawQuery != "" || apiURL.Fragment != "" || apiURL.Path != "" || net.ParseIP(apiURL.Hostname()) == nil || !net.ParseIP(apiURL.Hostname()).IsLoopback() {
+			return nil, errors.New("MCP_API_URL must be a loopback HTTP origin")
+		}
+		if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || (net.ParseIP(u.Hostname()) != nil && net.ParseIP(u.Hostname()).IsLoopback()))) {
+			return nil, errors.New("remote MCP requires HTTPS outside localhost")
+		}
+	}
 	a.routes()
 	return a, nil
 }
@@ -90,6 +110,9 @@ func New(db store.Repository, cfg Config) (*App, error) {
 func (a *App) Handler() http.Handler { return a.security(a.mux) }
 func (a *App) routes() {
 	m := a.mux
+	if a.cfg.MCPEnabled {
+		a.oauthRoutes()
+	}
 	m.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/projects", http.StatusSeeOther) })
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -133,12 +156,7 @@ func (a *App) routes() {
 	m.HandleFunc("POST /api/v1/notes/{noteID}/attachments", a.apiUploadAttachment)
 	m.HandleFunc("GET /api/v1/notes/{noteID}/attachments/{attachmentID}/content", a.apiAttachment)
 	m.HandleFunc("GET /api/v1/openapi.json", a.apiOpenAPI)
-	m.Handle("GET /assets/reader/", http.StripPrefix("/assets/reader/", http.FileServer(http.FS(render.Assets()))))
-	m.HandleFunc("GET /assets/app.css", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		w.Header().Set("Cache-Control", "public, max-age=86400")
-		io.WriteString(w, appCSS)
-	})
+	m.HandleFunc("/assets/", serveStaticAsset)
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { a.fail(w, r, store.ErrNotFound) })
 }
 

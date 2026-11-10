@@ -68,6 +68,13 @@ func run() error {
 			return errors.New("TRUST_PROXY must be true or false")
 		}
 	}
+	if s := os.Getenv("MCP_ENABLED"); s != "" {
+		cfg.MCPEnabled, err = strconv.ParseBool(s)
+		if err != nil {
+			return errors.New("MCP_ENABLED must be true or false")
+		}
+	}
+	cfg.MCPAPIURL = env("MCP_API_URL", "http://127.0.0.1:8080")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	db, err := store.Open(ctx, databaseURL)
 	cancel()
@@ -75,6 +82,14 @@ func run() error {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
+	if cfg.MCPEnabled {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		err := db.InitOAuth(ctx)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("initialize OAuth: %w", err)
+		}
+	}
 	ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_, err = db.Owner(ctx)
@@ -100,7 +115,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	server := &http.Server{Addr: env("APP_ADDR", ":8080"), Handler: app.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
+	server := &http.Server{Addr: env("APP_ADDR", ":8080"), Handler: app.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 	stopped, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	failures := make(chan error, 1)

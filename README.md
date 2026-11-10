@@ -8,7 +8,9 @@ Self-hosted Markdown notes: **Go 1.26**, `net/http` + `html/template`, PostgreSQ
 
 Pushes to `main` run [GitHub Actions](https://github.com/Awak3r/c0nspect/actions): PostgreSQL-backed tests and a cached Docker build run in parallel, followed by a digest-pinned GHCR release to the existing host-nginx VPS. The server pulls changed image layers instead of receiving a full image archive, takes a verified local backup, and updates only the app container. PRs never deploy. See [configuration, security and recovery](docs/ci-cd.md).
 
-The provisioning runbook below is for initial setup/manual recovery; normal updates use Actions. Production `.env`, volumes, SSH keys, and local `.deploy/` files are never committed.
+The provisioning runbook below is for initial setup/manual recovery; normal updates, including remote MCP, use Actions only. Production `.env`, volumes and SSH keys are never committed. Do not create local deployment scripts or a `.deploy/` workspace; keep disposable tools/worktrees outside the checkout.
+
+For measured response-time findings, the host connection-tracking fix, public-asset caching and optimization priorities, see [Performance](docs/performance.md).
 
 ## Interface boundaries
 
@@ -49,7 +51,10 @@ Use an explicitly chosen root shell for the remaining host steps, with working d
 APP_BASE_URL=https://notes.example.com
 CONSPECT_IMAGE=conspect:local
 CONSPECT_HTTP_PORT=8096
+MCP_ENABLED=true
 ```
+
+Remote MCP runs inside the app, with no extra port/container. The production overlay defaults `MCP_ENABLED` to `true`; set `MCP_ENABLED=false` in the server `.env` to opt out. Local development defaults to disabled. Keep `APP_SECRET` stable to preserve existing OAuth connections. See [MCP](docs/MCP.md).
 
 `CONSPECT_IMAGE` must match the loaded image tag/digest. `CONSPECT_HTTP_PORT` defaults to 8096; if changed, update `proxy_pass` in `deploy/nginx.tls.conf` and loopback health-check commands too. Do not set `COMPOSE_PROFILES` in `.env`; clear unintended ambient Compose/profile overrides.
 

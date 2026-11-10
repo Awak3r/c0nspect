@@ -19,6 +19,8 @@ services:
       MAX_IMAGE_BYTES: ${MAX_IMAGE_BYTES:-10485760}
       MAX_STORAGE_BYTES: ${MAX_STORAGE_BYTES:-1073741824}
       TRUST_PROXY: "true"
+      MCP_ENABLED: ${MCP_ENABLED:-false}
+      MCP_API_URL: http://127.0.0.1:8080
     volumes:
       - uploads:/data/uploads
     networks:

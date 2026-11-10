@@ -23,7 +23,8 @@ import (
 
 // Renderer is safe to reuse concurrently. Resolvers are scoped to one Render call.
 type Renderer struct {
-	policy *bluemonday.Policy
+	policy     *bluemonday.Policy
+	highlights *highlightCache
 }
 
 // New constructs a renderer with raw author HTML disabled and a strict allowlist.
@@ -52,7 +53,7 @@ func New() *Renderer {
 	p.AllowAttrs("loading").Matching(regexp.MustCompile(`^lazy$`)).OnElements("img")
 	p.AllowAttrs("decoding").Matching(regexp.MustCompile(`^async$`)).OnElements("img")
 	p.AllowAttrs("referrerpolicy").Matching(regexp.MustCompile(`^no-referrer$`)).OnElements("img")
-	return &Renderer{policy: p}
+	return &Renderer{policy: p, highlights: newHighlightCache(maxHighlightCacheBytes, maxHighlightCacheEntries)}
 }
 
 // Render renders Markdown without fetching resources or reading note attachments.
@@ -69,7 +70,7 @@ func (r *Renderer) Render(source string, attachmentURL func(id string) string) (
 			parser.WithInlineParsers(util.Prioritized(mathInlineParser{}, 150)),
 			parser.WithBlockParsers(util.Prioritized(mathBlockParser{}, 850))),
 		goldmark.WithRendererOptions(renderer.WithNodeRenderers(
-			util.Prioritized(&nodeRenderer{attachmentURL: attachmentURL}, 100))),
+			util.Prioritized(&nodeRenderer{attachmentURL: attachmentURL, highlights: r.highlights, highlightBudget: maxHighlightDocumentSource}, 100))),
 	)
 	var output bytes.Buffer
 	if err := md.Convert([]byte(source), &output); err != nil {
@@ -79,7 +80,9 @@ func (r *Renderer) Render(source string, attachmentURL func(id string) string) (
 }
 
 type nodeRenderer struct {
-	attachmentURL func(string) string
+	attachmentURL   func(string) string
+	highlights      *highlightCache
+	highlightBudget int
 }
 
 func (r *nodeRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {

@@ -13,7 +13,10 @@ import (
 	"github.com/yuin/goldmark/util"
 )
 
-const maxHighlightSource = 128 * 1024
+const (
+	maxHighlightSource         = 128 * 1024
+	maxHighlightDocumentSource = 128 * 1024
+)
 
 var codeStyle = styles.Get("github")
 
@@ -36,9 +39,22 @@ func (r *nodeRenderer) renderCodeBlock(w util.BufWriter, source []byte, node ast
 	}
 	_ = w.WriteByte('>')
 
-	var highlighted bytes.Buffer
-	if validLanguage && len(code) <= maxHighlightSource && highlight(&highlighted, language, string(code)) {
-		_, _ = w.Write(highlighted.Bytes())
+	var highlighted string
+	var ok bool
+	if validLanguage && len(code) <= maxHighlightSource && len(code) <= r.highlightBudget {
+		// Bound total expanded output/work even when a document has many blocks.
+		// Apply the same budget on hits so cache history cannot change rendering.
+		r.highlightBudget -= len(code)
+		highlighted, ok = r.highlights.getOrCompute(language, string(code), func() (string, bool) {
+			var output bytes.Buffer
+			if !highlight(&output, language, string(code)) {
+				return "", false
+			}
+			return output.String(), true
+		})
+	}
+	if ok {
+		_, _ = w.WriteString(highlighted)
 	} else {
 		_, _ = w.WriteString(html.EscapeString(string(code)))
 	}

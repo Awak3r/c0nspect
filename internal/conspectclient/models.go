@@ -2,7 +2,9 @@ package conspectclient
 
 // Config is trusted startup configuration, never supplied by MCP tool arguments.
 type Config struct {
-	BaseURL    string
+	BaseURL string
+	// APIBaseURL optionally uses a trusted internal API origin, while citation URLs stay public.
+	APIBaseURL string
 	APIKey     string
 	APIKeyFile string
 	FilesRoot  string

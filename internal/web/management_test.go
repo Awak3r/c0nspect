@@ -119,7 +119,7 @@ func TestCompactAPIKeyTemplates(t *testing.T) {
 		browserTestStatus(t, response, 200)
 		return response
 	}
-	page := render(pageData{Keys: keys})
+	page := render(pageData{Keys: visibleAPIKeys(keys, true), ShowRevoked: true})
 	doc := browserTestDocument(t, page)
 	cards := 0
 	for _, details := range browserTestElements(doc, "details") {
@@ -146,7 +146,22 @@ func TestCompactAPIKeyTemplates(t *testing.T) {
 	if cards != len(keys) || strings.Contains(page.Body.String(), keys[0].TokenHash) {
 		t.Error("key cards missing or private hash exposed")
 	}
-	page = render(pageData{Keys: keys, KeySecret: "csp_one-time-test-secret"})
+	if !browserTestHasLink(doc, "/settings/api-keys") {
+		t.Error("expanded list omitted the hide-revoked toggle")
+	}
+	visible := visibleAPIKeys(keys, false)
+	if len(visible) != 2 || visible[0].ID != "active" || visible[1].ID != "expired" || len(keys) != 3 {
+		t.Fatal("default filtering must hide only revoked keys without changing the source list")
+	}
+	page = render(pageData{Keys: visible})
+	doc = browserTestDocument(t, page)
+	if strings.Contains(page.Body.String(), keys[2].Name) || !browserTestHasLink(doc, "/settings/api-keys?show_revoked=1") {
+		t.Error("default list exposes a revoked key or lacks the show-revoked toggle")
+	}
+	if len(browserTestElements(doc, "summary")) != 3 || !strings.Contains(page.Body.String(), "Показано: 2") {
+		t.Error("visible key count does not match the filtered list")
+	}
+	page = render(pageData{Keys: visible, KeySecret: "csp_one-time-test-secret"})
 	doc = browserTestDocument(t, page)
 	if browserTestInputID(doc, "key-secret") == nil {
 		t.Error("one-time secret disappeared")

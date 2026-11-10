@@ -26,7 +26,12 @@ only escaped alt text, never an `img` or an empty `src` request. The renderer
 never opens attachment files or makes network requests.
 
 The parent owns templates, routing, attachment authorization, and CSP headers.
-Load the four root assets in this order, using **external** scripts only:
+Conspect's web handler serves a content-versioned reader bundle at
+`/assets/reader/<bundle-sha256>/`, with precompressed text, representation ETags,
+and immutable caching. Relative font URLs stay inside that bundle. The root
+paths below remain supported as revalidated legacy URLs; a simple filesystem
+mount is only a minimal integration example, not the production cache handler.
+Load the four assets in this order, using **external** scripts only:
 
 ```html
 <link rel="stylesheet" href="/assets/reader/katex.min.css">
@@ -73,17 +78,27 @@ require allowing inline scripts. A parent CSP can additionally use
   links, and `\includegraphics` cannot create trusted markup or fetch images.
 - Chroma highlights explicitly named fenced code languages, with local CSS
   classes only. Unknown/invalid languages, lexer errors, and blocks over
-  **128 KiB** fall back to escaped plain code. No copy-code controls or other buttons are generated.
+  **128 KiB** fall back to escaped plain code. There is also a **128 KiB total
+  highlighted-source budget per document**; later blocks remain intact escaped
+  plain code when it is exhausted. Cache hits consume the same budget, so output
+  never depends on cache history. No copy-code controls or other buttons are generated.
+- Each reusable Renderer has an LRU code-fragment cache capped at **8 MiB of
+  payload/keys and 512 entries**, plus bounded map/list metadata. Language and
+  source digest identify entries; concurrent identical work is coalesced. Complete
+  notes, attachment URLs, authorization decisions, CSRF/session data and pages
+  are never cached here. The complete generated output is still sanitized on
+  every render, and the attachment resolver is reevaluated for each request.
 - No note text is sent to an external service. HTTP(S) Markdown links are
   ordinary navigation links; external images are never embedded.
 
 ## Dependencies and vendored assets
 
-Existing Go dependencies, with no `go.mod`/`go.sum` changes:
+Pinned runtime Go dependencies:
 
 - `github.com/yuin/goldmark` **v1.8.7**
 - `github.com/microcosm-cc/bluemonday` **v1.0.27**
 - `github.com/alecthomas/chroma/v2` **v2.27.0** (`github` syntax theme)
+- `golang.org/x/sync` **v0.24.0** (singleflight, already present in the module graph)
 
 KaTeX **0.19.1**, pinned stable npm release:
 

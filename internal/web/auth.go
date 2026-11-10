@@ -23,7 +23,7 @@ func (a *App) owner(next http.HandlerFunc) http.HandlerFunc {
 		c, err := r.Cookie(sessionCookie)
 		if err != nil {
 			if r.Method == "GET" {
-				http.Redirect(w, r, "/login", 303)
+				http.Redirect(w, r, a.loginDestination(r), 303)
 			} else {
 				a.fail(w, r, &HTTPError{401, "unauthorized", "Войдите в аккаунт"})
 			}
@@ -31,7 +31,7 @@ func (a *App) owner(next http.HandlerFunc) http.HandlerFunc {
 		}
 		s, err := a.db.Session(r.Context(), tokenHash(c.Value))
 		if errors.Is(err, store.ErrNotFound) {
-			http.Redirect(w, r, "/login", 303)
+			http.Redirect(w, r, a.loginDestination(r), 303)
 			return
 		}
 		if err != nil {
@@ -70,7 +70,7 @@ func (a *App) owner(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 func (a *App) loginPage(w http.ResponseWriter, r *http.Request) {
-	a.page(w, r, 200, "login", pageData{Title: "Вход"})
+	a.page(w, r, 200, "login", pageData{Title: "Вход", LoginNext: oauthLoginNext(r.URL.Query().Get("next"))})
 }
 func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Origin") != a.cfg.BaseURL {
@@ -94,7 +94,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	}
 	passwordOK := bcrypt.CompareHashAndPassword([]byte(o.PasswordHash), []byte(r.FormValue("password"))) == nil
 	if r.FormValue("username") != o.Username || !passwordOK {
-		a.page(w, r, 401, "login", pageData{Title: "Вход", Error: "Неверный логин или пароль"})
+		a.page(w, r, 401, "login", pageData{Title: "Вход", Error: "Неверный логин или пароль", LoginNext: oauthLoginNext(r.PostForm.Get("next"))})
 		return
 	}
 	token := randomToken("sess_")
@@ -104,7 +104,11 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: token, Path: "/", HttpOnly: true, Secure: strings.HasPrefix(a.cfg.BaseURL, "https://"), SameSite: http.SameSiteLaxMode, MaxAge: 43200, Expires: s.ExpiresAt})
-	http.Redirect(w, r, "/projects", 303)
+	next := oauthLoginNext(r.PostForm.Get("next"))
+	if next == "" {
+		next = "/projects"
+	}
+	http.Redirect(w, r, next, 303)
 }
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 	s := r.Context().Value(sessionKey{}).(store.Session)
