@@ -1,0 +1,471 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Conspect API",
+    "version": "0.4.0",
+    "description": "REST contract used by the separately run cmd/conspect-mcp Go stdio adapter and other clients. These HTTP endpoints do not expose the MCP protocol; the adapter supplies tools and ADHD note-writing instructions to the client's model. The server base is /api/v1: append each API path to that base, including /openapi.json, which is public at /api/v1/openapi.json. The origin-root /healthz probe overrides the server base. Use HTTPS in production. API keys start with csp_ and are sent only in Authorization: Bearer, never in URLs. Resource selection (projects and/or individual notes) and scopes are checked independently on every request, including attachments. Write scopes do not imply read scopes. API keys cannot delete resources, manage projects or sharing, issue keys, or change owner settings. Public share tokens and owner session cookies are not API credentials."
+  },
+  "servers": [
+    {"url": "/api/v1", "description": "Same origin API base; append paths to this base. Canonical APP_BASE_URL uses HTTPS in production."}
+  ],
+  "tags": [
+    {"name": "Projects"},
+    {"name": "Notes"},
+    {"name": "Attachments"},
+    {"name": "Service"}
+  ],
+  "security": [{"ApiKeyBearer": []}],
+  "paths": {
+    "/projects": {
+      "get": {
+        "operationId": "listProjects",
+        "tags": ["Projects"],
+        "summary": "List only projects visible to this key",
+        "description": "Requires notes:read. Include explicitly granted projects and the current parent projects of individually granted notes (including their project metadata); never reveal unrelated projects or neighboring notes. The response is an object with a projects array, not a bare array.",
+        "x-required-scopes": ["notes:read"],
+        "responses": {
+          "200": {
+            "description": "Visible projects; an empty result is {projects: []}.",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectList"}}}
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "429": {"$ref": "#/components/responses/RateLimited"},
+          "500": {"$ref": "#/components/responses/InternalError"}
+        }
+      }
+    },
+    "/projects/{projectId}/notes": {
+      "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+      "get": {
+        "operationId": "listNotes",
+        "tags": ["Notes"],
+        "summary": "List permitted notes in one project",
+        "description": "Requires notes:read. Include only notes selected directly or through an allowed project; a note-only grant does not reveal its neighbors. Return 404 for a project outside the allowed resources. The response is an object with a notes array; a nonmatching search returns an empty array, not 404.",
+        "parameters": [
+          {"name": "q", "in": "query", "description": "Case-insensitive literal substring search in note title and Markdown.", "schema": {"type": "string"}},
+          {"name": "sort", "in": "query", "description": "title sorts by title; omitted or any other value uses most recently modified first.", "schema": {"type": "string", "default": "modified"}}
+        ],
+        "x-required-scopes": ["notes:read"],
+        "responses": {
+          "200": {
+            "description": "Permitted notes; attachments metadata is included only with attachments:read.",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NoteList"}}}
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "429": {"$ref": "#/components/responses/RateLimited"},
+          "500": {"$ref": "#/components/responses/InternalError"}
+        }
+      },
+      "post": {
+        "operationId": "createNote",
+        "tags": ["Notes"],
+        "summary": "Create a note in an explicitly allowed project",
+        "description": "Requires notes:write and a project-level grant. A key restricted to individual notes cannot create neighboring notes. Creates a private note with version 1. Returns the flat Note object, not {note: ...}. Both title and markdown are required. The JSON wire body is bounded to 6 * MAX_MARKDOWN_BYTES + 8192 bytes (12591104 by default); decoded Markdown has its separate MAX_MARKDOWN_BYTES limit. Invalid UTF-8 returns 422. This operation has no promised idempotency key; blindly retrying an uncertain POST can create duplicates.",
+        "x-required-scopes": ["notes:write"],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {
+            "schema": {"$ref": "#/components/schemas/NoteInput"},
+            "example": {"title": "Matrices", "markdown": "# Matrices\n\nAn inline formula: $A^{-1}A=I$.\n"}
+          }}
+        },
+        "responses": {
+          "201": {
+            "description": "Created note, with a strong ETag such as \"v1\". attachments is present only with attachments:read.",
+            "headers": {
+              "ETag": {"$ref": "#/components/headers/NoteETag"},
+              "Location": {"description": "Relative URL of the created note.", "schema": {"type": "string", "format": "uri-reference"}, "example": "/api/v1/notes/22222222222222222222222222222222"}
+            },
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Note"}}}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "413": {"$ref": "#/components/responses/TooLarge"},
+          "415": {"$ref": "#/components/responses/UnsupportedFormat"},
+          "422": {"$ref": "#/components/responses/InvalidInput"},
+          "429": {"$ref": "#/components/responses/RateLimited"},
+          "500": {"$ref": "#/components/responses/InternalError"}
+        }
+      }
+    },
+    "/notes/{noteId}": {
+      "parameters": [{"$ref": "#/components/parameters/NoteId"}],
+      "get": {
+        "operationId": "getNote",
+        "tags": ["Notes"],
+        "summary": "Read a note's Markdown and current version",
+        "description": "Requires notes:read and access to this note. Returns a flat Note. attachments is omitted unless the key also has attachments:read. shared is a boolean only: the secret public URL/token is never returned. Preserve the exact quoted ETag for a subsequent update.",
+        "x-required-scopes": ["notes:read"],
+        "responses": {
+          "200": {
+            "description": "Current note and strong ETag, e.g. \"v1\".",
+            "headers": {"ETag": {"$ref": "#/components/headers/NoteETag"}},
+            "content": {"application/json": {
+              "schema": {"$ref": "#/components/schemas/Note"},
+              "example": {
+                "id": "22222222222222222222222222222222",
+                "project_id": "11111111111111111111111111111111",
+                "title": "Matrices",
+                "markdown": "# Matrices\n\n$A^{-1}A=I$\n",
+                "source_name": "matrices.md",
+                "version": 1,
+                "shared": false,
+                "created_at": "2026-11-09T12:00:00Z",
+                "updated_at": "2026-11-09T12:00:00Z",
+                "attachments": []
+              }
+            }}
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "429": {"$ref": "#/components/responses/RateLimited"},
+          "500": {"$ref": "#/components/responses/InternalError"}
+        }
+      },
+      "put": {
+        "operationId": "updateNote",
+        "tags": ["Notes"],
+        "summary": "Replace title and Markdown with optimistic concurrency control",
+        "description": "Requires notes:write and access to this note. Both title and markdown are required, even if only one changed. The JSON wire body is bounded to 6 * MAX_MARKDOWN_BYTES + 8192 bytes; decoded Markdown has its separate MAX_MARKDOWN_BYTES limit. Invalid UTF-8 returns 422. Send the exact strong ETag from the latest GET as If-Match, e.g. \"v1\". Checking the key, version and committing the update is atomic. Success increments the version and returns the flat updated Note plus its new ETag. 412 means fetch again and recompute the edit; never overwrite blindly. 428 means the condition is absent. Updating a shared note changes what its existing public link displays. This does not grant share-management permission.",
+        "x-required-scopes": ["notes:write"],
+        "parameters": [{"$ref": "#/components/parameters/IfMatch"}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {
+            "schema": {"$ref": "#/components/schemas/NoteInput"},
+            "example": {"title": "Matrices", "markdown": "# Matrices\n\nUpdated explanation with $AB$.\n"}
+          }}
+        },
+        "responses": {
+          "200": {
+            "description": "Updated note and new strong ETag, e.g. \"v2\". attachments is present only with attachments:read.",
+            "headers": {"ETag": {"$ref": "#/components/headers/NoteETag"}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Note"}}}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "412": {"$ref": "#/components/responses/StaleVersion"},
+          "413": {"$ref": "#/components/responses/TooLarge"},
+          "415": {"$ref": "#/components/responses/UnsupportedFormat"},
+          "422": {"$ref": "#/components/responses/InvalidInput"},
+          "428": {"$ref": "#/components/responses/MissingPrecondition"},
+          "429": {"$ref": "#/components/responses/RateLimited"},
+          "500": {"$ref": "#/components/responses/InternalError"}
+        }
+      }
+    },
+    "/notes/{noteId}/attachments": {
+      "parameters": [{"$ref": "#/components/parameters/NoteId"}],
+      "post": {
+        "operationId": "uploadAttachment",
+        "tags": ["Attachments"],
+        "summary": "Upload an image without modifying the note's Markdown",
+        "description": "Requires attachments:write and access to the note. Send one PNG, JPEG or WebP in multipart field file. Default file limit is 10485760 bytes (10 MiB), subject to MAX_IMAGE_BYTES and the attachment storage quota. The entire API multipart body is capped at MAX_IMAGE_BYTES + 65536 bytes (10551296 by default), independently of the file limit. Images must have positive width/height, at most 20000000 total decoded pixels and at most 16000 pixels on each side; dimension violations return 422. Unsupported MIME or undecodable image headers return 415. MIME declaration alone is not trusted; SVG, HTML, PDF and executable formats are rejected. Returns attachment metadata and ![sanitized filename](attachment:<id>), with the filename escaped for Markdown alt text. Uploading does NOT append the fragment, edit Markdown, or increment the note's text version. To insert it, fetch the latest note/ETag and explicitly update Markdown at the intended location with notes:write. A key need not have notes:write merely to upload an attachment.",
+        "x-required-scopes": ["attachments:write"],
+        "requestBody": {
+          "required": true,
+          "content": {"multipart/form-data": {
+            "schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["file"],
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "One PNG, JPEG or WebP. Default file maximum 10485760 bytes; positive dimensions, width * height <= 20000000 and each side <= 16000. Whole API multipart body: MAX_IMAGE_BYTES + 65536 bytes.",
+                  "x-default-max-bytes": 10485760,
+                  "x-max-image-pixels": 20000000,
+                  "x-max-image-side": 16000
+                }
+              }
+            },
+            "encoding": {"file": {"contentType": "image/png, image/jpeg, image/webp"}}
+          }}
+        },
+        "responses": {
+          "201": {
+            "description": "Stored attachment and an inert Markdown fragment. No note update is performed.",
+            "content": {"application/json": {
+              "schema": {"$ref": "#/components/schemas/AttachmentUpload"},
+              "example": {
+                "attachment": {
+                  "id": "33333333333333333333333333333333",
+                  "note_id": "22222222222222222222222222222222",
+                  "name": "matrix.png",
+                  "mime_type": "image/png",
+                  "size": 1024,
+                  "created_at": "2026-11-09T12:01:00Z"
+                },
+                "markdown": "![matrix.png](attachment:33333333333333333333333333333333)"
+              }
+            }}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "413": {"$ref": "#/components/responses/TooLarge"},
+          "415": {"$ref": "#/components/responses/UnsupportedFormat"},
+          "422": {"$ref": "#/components/responses/InvalidInput"},
+          "429": {"$ref": "#/components/responses/RateLimited"},
+          "500": {"$ref": "#/components/responses/InternalError"}
+        }
+      }
+    },
+    "/notes/{noteId}/attachments/{attachmentId}/content": {
+      "parameters": [
+        {"$ref": "#/components/parameters/NoteId"},
+        {"$ref": "#/components/parameters/AttachmentId"}
+      ],
+      "get": {
+        "operationId": "getAttachmentContent",
+        "tags": ["Attachments"],
+        "summary": "Read an allowed note's image as binary data",
+        "description": "Requires attachments:read and access to the owning note. The attachment must belong to this note; an ID from another note cannot bypass authorization. No globally public uploads/static route is provided.",
+        "x-required-scopes": ["attachments:read"],
+        "responses": {
+          "200": {
+            "description": "Original image bytes, not JSON or base64.",
+            "content": {
+              "image/png": {"schema": {"type": "string", "format": "binary"}},
+              "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
+              "image/webp": {"schema": {"type": "string", "format": "binary"}}
+            }
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "429": {"$ref": "#/components/responses/RateLimited"},
+          "500": {"$ref": "#/components/responses/InternalError"}
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "getOpenAPI",
+        "tags": ["Service"],
+        "summary": "Public API schema for external integrations",
+        "description": "Server /api/v1 plus this path /openapi.json resolves to /api/v1/openapi.json; do not double-prefix the path. No bearer authentication is required.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "This OpenAPI document; no bearer key or owner session is required.",
+            "content": {"application/json": {"schema": {"type": "object", "additionalProperties": true}}}
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "servers": [{"url": "/", "description": "Readiness is at the origin root, outside /api/v1."}],
+      "get": {
+        "operationId": "getReadiness",
+        "tags": ["Service"],
+        "summary": "Local application/database readiness probe",
+        "description": "Used by Docker and Caddy over the isolated network. Keep responses minimal and free of secrets. A 200 means the service is ready, including database connectivity; response body is not part of the integration contract.",
+        "security": [],
+        "responses": {
+          "200": {"description": "Ready."},
+          "503": {"description": "Not ready, including unavailable database."}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "csp_<secret>",
+        "description": "API key issued at /settings/api-keys. HTTPS only in production; loopback HTTP is a development exception. Independent scopes: notes:read, notes:write, attachments:read, attachments:write, plus project/note resource restrictions. This is not OAuth; required scopes are documented per operation using x-required-scopes. Never put the key in Markdown, a query string, a public URL or model prompts."
+      }
+    },
+    "parameters": {
+      "ProjectId": {
+        "name": "projectId", "in": "path", "required": true,
+        "description": "Opaque project ID from an authorized response.",
+        "schema": {"type": "string", "minLength": 1},
+        "example": "11111111111111111111111111111111"
+      },
+      "NoteId": {
+        "name": "noteId", "in": "path", "required": true,
+        "description": "Opaque note ID from an authorized response.",
+        "schema": {"type": "string", "minLength": 1},
+        "example": "22222222222222222222222222222222"
+      },
+      "AttachmentId": {
+        "name": "attachmentId", "in": "path", "required": true,
+        "description": "Opaque ID of an attachment belonging to noteId.",
+        "schema": {"type": "string", "minLength": 1},
+        "example": "33333333333333333333333333333333"
+      },
+      "IfMatch": {
+        "name": "If-Match", "in": "header", "required": true,
+        "description": "Exact strong ETag from the latest GET, including double quotes. Missing: 428; stale: 412. Wildcards and weak ETags are not the update contract.",
+        "schema": {"type": "string", "pattern": "^\"v[1-9][0-9]*\"$"},
+        "example": "\"v1\""
+      }
+    },
+    "headers": {
+      "NoteETag": {
+        "description": "Strong ETag for the returned version; send it unchanged as If-Match on PUT.",
+        "schema": {"type": "string", "pattern": "^\"v[1-9][0-9]*\"$"},
+        "example": "\"v1\""
+      }
+    },
+    "schemas": {
+      "Project": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "description", "created_at", "updated_at"],
+        "properties": {
+          "id": {"type": "string"},
+          "name": {"type": "string"},
+          "description": {"type": "string"},
+          "created_at": {"type": "string", "format": "date-time"},
+          "updated_at": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ProjectList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["projects"],
+        "properties": {"projects": {"type": "array", "items": {"$ref": "#/components/schemas/Project"}}},
+        "example": {"projects": []}
+      },
+      "Note": {
+        "type": "object",
+        "description": "Flat note object. attachments is present only if attachments:read is granted. No public share token, secret URL, storage path or API key is returned.",
+        "additionalProperties": false,
+        "required": ["id", "project_id", "title", "markdown", "source_name", "version", "shared", "created_at", "updated_at"],
+        "properties": {
+          "id": {"type": "string"},
+          "project_id": {"type": "string"},
+          "title": {"type": "string"},
+          "markdown": {"type": "string", "description": "UTF-8 source, including local attachment:<id> references and unrendered LaTeX."},
+          "source_name": {"type": "string", "description": "Original Markdown filename; may be empty for an API-created note."},
+          "version": {"type": "integer", "format": "int64", "minimum": 1},
+          "shared": {"type": "boolean", "description": "Whether the note is publicly shared; never the public URL/token."},
+          "created_at": {"type": "string", "format": "date-time"},
+          "updated_at": {"type": "string", "format": "date-time"},
+          "attachments": {"type": "array", "items": {"$ref": "#/components/schemas/Attachment"}, "description": "Omitted without attachments:read; an empty readable collection is []."}
+        }
+      },
+      "NoteList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["notes"],
+        "properties": {"notes": {"type": "array", "items": {"$ref": "#/components/schemas/Note"}}},
+        "example": {"notes": []}
+      },
+      "NoteInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "markdown"],
+        "properties": {
+          "title": {"type": "string", "minLength": 1, "maxLength": 300, "description": "Nonblank UTF-8 title, at most 300 Unicode code points, without NUL."},
+          "markdown": {
+            "type": "string",
+            "description": "UTF-8 Markdown without NUL; invalid UTF-8/NUL returns 422. Default decoded maximum 2097152 encoded bytes (2 MiB), configurable via MAX_MARKDOWN_BYTES. This is a byte limit, not a JSON character-count limit. The JSON wire body is separately bounded to 6 * MAX_MARKDOWN_BYTES + 8192 bytes.",
+            "x-default-max-bytes": 2097152
+          }
+        }
+      },
+      "Attachment": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "note_id", "name", "mime_type", "size", "created_at"],
+        "properties": {
+          "id": {"type": "string"},
+          "note_id": {"type": "string"},
+          "name": {"type": "string", "description": "Sanitized original display filename (at most 200 UTF-8 bytes), never a storage path."},
+          "mime_type": {"type": "string", "enum": ["image/png", "image/jpeg", "image/webp"]},
+          "size": {"type": "integer", "format": "int64", "minimum": 1, "description": "Stored image size in bytes."},
+          "created_at": {"type": "string", "format": "date-time"}
+        }
+      },
+      "AttachmentUpload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["attachment", "markdown"],
+        "properties": {
+          "attachment": {"$ref": "#/components/schemas/Attachment"},
+          "markdown": {"type": "string", "description": "Suggested ![sanitized filename](attachment:<id>) fragment; filename is escaped as alt text. No automatic Markdown mutation or text-version increment.", "example": "![matrix.png](attachment:33333333333333333333333333333333)"}
+        }
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "message", "request_id"],
+            "properties": {
+              "code": {"type": "string", "description": "Stable machine-readable error code."},
+              "message": {"type": "string", "description": "Safe explanation without secret values or internal details."},
+              "request_id": {"type": "string", "description": "Identifier for troubleshooting; do not include credentials when reporting it."}
+            }
+          }
+        },
+        "example": {"error": {"code": "invalid_input", "message": "Нужны поля title и markdown", "request_id": "example-request-id"}}
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Malformed JSON, unknown fields, multiple JSON values, malformed multipart, or a noncanonical If-Match header (weak tags, lists and wildcards). Invalid UTF-8 is 422, not 400/415.",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      },
+      "Unauthorized": {
+        "description": "Missing, invalid, expired or revoked bearer API key. No authentication via query strings or public share tokens.",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      },
+      "Forbidden": {
+        "description": "Valid API key lacks a required scope. A write scope does not imply its corresponding read scope.",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      },
+      "NotFound": {
+        "description": "Missing resource or resource outside the key's allowed projects/notes; these cases are intentionally indistinguishable. Also used for an attachment not belonging to the addressed note.",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      },
+      "StaleVersion": {
+        "description": "If-Match is stale. No update is committed. Fetch the latest note and ETag and recompute the edit.",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      },
+      "MissingPrecondition": {
+        "description": "If-Match is required. No update is committed.",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      },
+      "TooLarge": {
+        "description": "Markdown/image request exceeds the configured byte limit, or storage quota would be exceeded. Default decoded Markdown limit: 2 MiB; image file: 10 MiB; attachment metadata size quota: 1 GiB. API image multipart body limit is MAX_IMAGE_BYTES + 65536; note JSON body limit is 6 * MAX_MARKDOWN_BYTES + 8192. No partial note overwrite.",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      },
+      "UnsupportedFormat": {
+        "description": "Unsupported request content type, unsupported image MIME/format or undecodable image headers. Images must be PNG, JPEG or WebP; no SVG/HTML/PDF. Invalid UTF-8 Markdown/JSON is 422, not 415.",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      },
+      "InvalidInput": {
+        "description": "Missing title/markdown (invalid_input), invalid UTF-8 wire body (invalid_utf8), invalid Markdown/NUL (invalid_markdown), invalid title (invalid_title), invalid image file selection (invalid_file), or dimensions exceeding 20000000 pixels / 16000 per side (image_dimensions). Undecodable image headers are 415.",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      },
+      "RateLimited": {
+        "description": "API limit exceeded: 600 requests per minute per client IP or 240 per minute per authenticated key. Retry-After is 60 seconds. Back off; do not blindly replay non-idempotent POST requests.",
+        "headers": {"Retry-After": {"description": "Seconds to wait before retrying.", "schema": {"type": "integer", "minimum": 1}, "example": 60}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      },
+      "InternalError": {
+        "description": "Unexpected service error. Safe message and request_id only; no database details, Markdown or secret values.",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      }
+    }
+  }
+}

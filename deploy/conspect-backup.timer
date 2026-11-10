@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily local Conspect backup (UTC)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+RandomizedDelaySec=10m
+AccuracySec=1s
+Persistent=true
+Unit=conspect-backup.service
+
+[Install]
+WantedBy=timers.target

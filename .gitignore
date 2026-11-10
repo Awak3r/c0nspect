@@ -1,0 +1,32 @@
+# Local credentials; only the template is versioned.
+.env
+.env.*
+!.env.example
+
+# Application state, local backups and credentials from backup bundles.
+/data/
+/backups/
+/deploy/.operations.lock
+/deploy/**/.partial-*/
+/deploy/**/config.env
+/deploy/**/compose.resolved.json
+*.dump
+*.tar.gz
+
+# Build/test output and editor state.
+/bin/
+/.deploy/
+/.releases/
+/.release.json
+/conspect
+*.test
+*.out
+coverage*
+*.log
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+.idea/
+.vscode/
+.zed/

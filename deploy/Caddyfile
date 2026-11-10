@@ -1,0 +1,23 @@
+{
+	# Request-error logs can contain /s/<token> paths even without access logs.
+	# Keep operational TLS/startup logs, but never enable request/debug logging.
+	log default {
+		exclude http.log.access http.log.error
+	}
+}
+
+{$DOMAIN} {
+	# Preserve the app's per-route referrer policy for readers and admin forms.
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Robots-Tag "noindex, nofollow"
+		-Server
+	}
+
+	# No access-log directive: public share tokens must not appear in logs.
+	reverse_proxy app:8080 {
+		health_uri /healthz
+		health_interval 30s
+		health_timeout 5s
+	}
+}
