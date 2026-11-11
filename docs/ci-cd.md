@@ -4,14 +4,42 @@ Repository: <https://github.com/Awak3r/c0nspect>. Workflow: `.github/workflows/c
 
 ## Normal updates
 
-Push reviewed changes to `main`. Actions runs two jobs in parallel:
+The default delivery path is **one short local preflight → commit/push → authoritative CI → digest-pinned production release**. Do not repeat the full CI suite locally before every push or deployment request.
+
+### Local gate: syntax and formatting, not a CI rehearsal
+
+Run `python3 .github/scripts/preflight.py` from the checkout, review the diff, explicitly stage intended paths, then commit/push when authorized. The script checks Git whitespace, Go formatting, Python AST and JSON syntax. It covers staged blobs, working changes, untracked source and outgoing commits against the **locally known upstream**. It is read-only and makes no network requests; use `--base REF` for a different local baseline. Without an upstream it reports a HEAD fallback, so outgoing-commit coverage then requires an explicit base. Fetch separately when needed; the script never fetches or autoformats.
+
+Do **not** start Docker/PostgreSQL, run all Go race tests/vet/build, all deployment tests or image smoke as an additional release prerequisite. Those are CI gates below. Use a small targeted local test when reproducing/fixing a bug, and reserve a full disposable rehearsal for an explicit request or a failure that requires it. Missing local Docker/DB is not a reason to delay a push or invent a manual server deployment.
+
+If the unchanged tree already passed its local gate during the implementation task, do not repeat it when the user says “deploy”. Reuse a completed Actions run only for its exact SHA; a previous green revision never validates new code. After an authorized push, find the run by commit SHA and watch it through completion. Report **pushed**, **CI passed**, and **production healthy** as separate facts. If a job fails, inspect that job and reproduce/rerun the relevant failure instead of launching every local suite again.
+
+### CI: complete checks once, in the supported environment
+
+On each push/PR, **Checks** always runs. A small **Plan image and release** job runs alongside it and decides whether image/release work is necessary. For application/deployment changes, Actions retains the two expensive paths in parallel (image waits only for the planner, not for Checks):
 
 1. **Checks:** formatting, vet, race tests against disposable PostgreSQL 17, all Go entrypoints, Python deployment/transport tests, and OpenAPI JSON parsing. Production credentials/database are never used for tests.
 2. **Image:** builds and loads `linux/amd64` using Docker Buildx, publishes `ghcr.io/awak3r/c0nspect:<full-commit-sha>` on main, then smoke-tests that same image with disposable PostgreSQL 17. The smoke check enables remote MCP and verifies readiness, OAuth discovery, canonical issuer/resource/endpoints, PKCE S256, and an unauthenticated `POST /mcp` returning `401` with its discovery challenge. It uses random test credentials, a temporary Docker network and only loopback port 18080; containers/network are cleaned even on failure. No production configuration or data is used. A failed smoke check blocks deployment even if the image was already published. Both build layers and the Go compiler cache survive ephemeral runners. Only Go source/embedded assets and module metadata enter the build context.
 
-Only after **both** succeed does **Deploy production** connect through verified SSH and deploy the exact published image **digest**, not a mutable tag. PRs are checked/built but cannot deploy. `workflow_dispatch` on main reruns the pipeline. Main runs are serialized without interrupting a live deployment; GitHub keeps at most one pending run per concurrency group, replacing older pending runs. PR runs may be canceled.
+Only after **both** succeed does **Deploy production** connect through verified SSH and deploy the exact published image **digest**, not a mutable tag. PRs never deploy. `workflow_dispatch` on main always requests the full path. Main runs remain serialized without interrupting a live deployment; GitHub keeps at most one pending run per concurrency group, replacing older pending runs. PR runs may be canceled. Do not move the lock to only the deploy job without a separately reviewed stale-revision admission check: an older slow build must never overwrite a newer release.
 
 The VPS does not compile Go, receive a full Docker archive, pull a new PostgreSQL tag, or restart host nginx. Registry pulls transfer only missing layers. The first run warms the caches and is slower; actual duration depends on GitHub capacity/network and snapshot size. There is still a short maintenance window for the consistent backup and container replacement: this is not zero-downtime deployment.
+
+### Docs-only fast path: prove it or build
+
+`.github/scripts/plan_ci.py` may skip **only Image and Deploy**, never Checks. Its exact allowlist is `README.md`, `AGENTS.md`, `DESIGN.md`, `PRODUCT.md`, `SPEC.md`, `docs/ci-cd.md`, `docs/MCP.md`, and `docs/performance.md`. There is no workflow-level `paths-ignore` or blanket `*.md` exception: Markdown under `internal/` can be embedded application input. Any unknown path, executable/symlink/type change, mixed change or inspection error requires the full path. The plan prints `build_image` and a short reason; unavailable job outputs never authorize skipping.
+
+- **PR:** compare the complete diff from its merge base, not just the last commit; no production metadata is needed.
+- **Main push:** compare the current SHA against the latest recorded **production deployment**, which must have a successful latest status and an ancestor SHA. The planner reads GitHub deployment metadata with `deployments: read`; it does not connect to the VPS. It never falls back to an older success when the latest deployment is failed, pending or unknown. Unavailable metadata/history also means full build.
+- **Manual dispatch:** always full, including docs-only revisions.
+
+Comparing only `event.before` or `HEAD~1` is unsafe: a pending code push can be replaced by a later docs push, or its CI may have failed. The production-baseline comparison includes any such undelivered application changes and forces a release. Repeated docs-only pushes can safely leave the runtime revision unchanged. A green docs-only run means **documentation checked**, not “a new production revision deployed”. GitHub metadata is not a live health probe; after manual recovery or uncertain production state, use a reviewed full manual-dispatch/recovery path, not a docs-only skip.
+
+### Measured critical path and further optimization
+
+For run [42996893080](https://github.com/Awak3r/c0nspect/actions/runs/42996893080), the pre-planner pipeline completed in approximately **2 min 49 s**: Checks **61 s**, Image **101 s**, Deploy **57 s**. Checks and Image overlapped. These are one warm-run sample, not an SLA; queue, cache misses and backup sizes affect duration. Docs-only runs now avoid image publication, backup and container replacement; their remaining cost is complete Checks plus planning/queue overhead. New workflow behavior has to be confirmed by Actions after push, not inferred from local unit tests.
+
+The immediate win is removing the duplicated full local rehearsal and avoiding unnecessary docs-only releases, **not removing race/integration tests or verified backups**. Buildx layers and compiler caches remain enabled. Do not remove cache extraction or weaken release safety based on a single timing sample. Keep prepare/image and deploy scheduling unchanged until repeated timings justify a separate optimization.
 
 ## One-time configuration
 

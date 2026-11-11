@@ -507,12 +507,27 @@ TLS, scoped keys and secret-free proxy logs do not provide end-to-end encryption
 
 ## Checks
 
+### Default local gate before push
+
+```sh
+python3 .github/scripts/preflight.py
+```
+
+This read-only gate checks changed/outgoing Go formatting, Git whitespace, Python AST and JSON syntax, including staged, unstaged and untracked source. It uses the local upstream without fetching (`--base REF` overrides it). Review the diff and explicitly stage intended files. **Do not duplicate CI locally:** Docker/PostgreSQL, full race tests/vet/build and image smoke are not routine pre-push requirements. A small targeted regression test is appropriate while fixing a bug. If the unchanged tree already passed the gate, do not run it again merely because the user requests deployment.
+
+GitHub Actions is the full validation authority for the exact pushed SHA. Checks always run; proven docs-only changes can skip Image/Deploy using a conservative production-baseline comparison. Application/deployment changes keep full tests, image smoke, verified backup and HTTPS/MCP acceptance. See [fast release policy, planner and measured timings](docs/ci-cd.md). Missing local Docker/DB is not a release blocker; never substitute an ad-hoc VPS deployment.
+
+### Targeted diagnostics and optional full rehearsal
+
+The commands below are **not an additional mandatory release checklist**. Use only the relevant check when investigating a failure, or the full set when an isolated rehearsal is explicitly needed.
+
 ```sh
 # No Docker services/network or real env files are needed. Compose CLI enables
 # the synthetic-env overlay contracts; those tests skip if the CLI is absent:
 python3 -m unittest discover -s deploy -p 'test_*.py' -v
 python3 -m json.tool internal/web/openapi.json > /dev/null
-# With your filled .env; these commands print no resolved secrets:
+# Only for deliberate local Compose debugging, not every push/deploy.
+# Use your local development .env, never production credentials; no resolved secrets are printed:
 docker compose --env-file .env -f compose.yaml config --quiet
 docker compose --env-file .env -f compose.yaml -f deploy/compose.local.yaml config --quiet
 docker compose --env-file .env -f compose.yaml -f deploy/compose.nginx.yaml config --quiet

@@ -18,6 +18,27 @@ env:
   IMAGE: ghcr.io/awak3r/c0nspect
 
 jobs:
+  plan:
+    name: Plan image and release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      deployments: read
+    outputs:
+      build_image: ${{ steps.plan.outputs.build_image }}
+      reason: ${{ steps.plan.outputs.reason }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Prove docs-only changes or require the full image path
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/plan_ci.py
+
   checks:
     name: Checks
     runs-on: ubuntu-24.04
@@ -74,6 +95,8 @@ jobs:
 
   image:
     name: Image
+    needs: [plan]
+    if: needs.plan.outputs.build_image != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
@@ -130,8 +153,8 @@ jobs:
 
   deploy:
     name: Deploy production
-    needs: [checks, image]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [plan, checks, image]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.plan.outputs.build_image != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     environment: production
