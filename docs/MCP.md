@@ -199,16 +199,39 @@ grants, expiry и revocation проверяются так же, как в REST.
 
 Удалённый сервер **не видит** `/home/...` на клиенте. Не передавайте ему этот
 путь и не пытайтесь настраивать файловый корень VPS под WSL. Для импорта без
-изменений используйте локальный HTTP-загрузчик:
+изменений используйте локальный HTTP-загрузчик.
+
+На новой машине из клона репозитория:
 
 ```sh
-go build -o bin/conspect-upload ./cmd/conspect-upload
-# В приватной локальной конфигурации задайте CONSPECT_URL,
-# CONSPECT_API_KEY_FILE и узкий CONSPECT_FILES_ROOT учебной папки.
-# Ни ключ, ни его содержимое в команду не вставляются.
-./bin/conspect-upload --project-id PROJECT_ID --path path/ready.md --check
-./bin/conspect-upload --project-id PROJECT_ID --path path/ready.md
+python3 .github/scripts/install_uploader.py --files-root /home/<user>/study/university
 ```
+
+Скрипт собирает `cmd/conspect-upload` локальным Go, ставит бинарник в
+`~/.local/bin/conspect-upload`, записывает приватный конфиг без секрета
+`~/.config/conspect/upload.json` (`url`, `files_root`, `key_file`) и копирует
+ключ в `~/.config/conspect/api-key` (`0600`). Ключ берётся из `--key-file`,
+уже существующего файла ключа либо скрытого запроса; он не передаётся
+аргументами и не печатается. Повторная установка и замена файлов — только
+с `--replace`; конфигурационный каталог должен лежать вне клона репозитория.
+Чтобы получить конфигурацию другого пользователя/машины, повторите шаги:
+ключ выпускается в `/settings/api-keys`, а не переносится из Git.
+
+Затем:
+
+```sh
+conspect-upload --project-id PROJECT_ID --path path/ready.md --check
+conspect-upload --project-id PROJECT_ID --path path/ready.md
+```
+
+Ручной вариант без установщика: `go build -o bin/conspect-upload
+./cmd/conspect-upload` и переменные `CONSPECT_URL`, `CONSPECT_API_KEY_FILE`,
+узкий `CONSPECT_FILES_ROOT` (ровно один из `CONSPECT_API_KEY`/
+`CONSPECT_API_KEY_FILE`; ни ключ, ни его содержимое в команду не вставляются).
+Необязательный `--config FILE` или конфиг по умолчанию задают те же значения
+полями `url`, `files_root`, `key_file`; непустая переменная окружения
+переопределяет то же поле конфига. Неизвестные поля JSON отвергаются;
+секрета в конфиге быть не должно — только путь к файлу ключа.
 
 Путь может быть относительным корню или абсолютным WSL-путём внутри него.
 Symlink/traversal и выход за корень запрещены. `--check` не делает сетевых
@@ -218,6 +241,8 @@ Markdown без пересказа и возвращает компактный 
 после неопределённого результата сначала проверьте список заметок, чтобы не
 создать дубликат. Для этого сценария не нужны `read_file`, `conspect_prepare_note`
 или генерация всего файла в аргументах `conspect_create_note`.
+Агент MCP-клиента может читать локальные файлы сам и вызывать загрузчик как
+обычную команду терминала; удалённый MCP не участвует в передаче файла.
 
 Старый локальный MCP следует удалять только после успешной проверки remote
 `initialize` и переключения Zed. Сохраните API-ключ для HTTP-загрузчика; папки

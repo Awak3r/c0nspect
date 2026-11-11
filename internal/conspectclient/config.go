@@ -19,11 +19,17 @@ const (
 // ConfigFromEnv reads trusted startup settings. It validates credentials without
 // replacing APIKeyFile with its contents; New revalidates and reads that file.
 func ConfigFromEnv() (Config, error) {
+	return ConfigFromLookup(os.Getenv)
+}
+
+// ConfigFromLookup is ConfigFromEnv with an injected environment source, so a
+// caller can merge a private local config file underneath real variables.
+func ConfigFromLookup(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		BaseURL:    os.Getenv("CONSPECT_URL"),
-		APIKey:     os.Getenv("CONSPECT_API_KEY"),
-		APIKeyFile: os.Getenv("CONSPECT_API_KEY_FILE"),
-		FilesRoot:  os.Getenv("CONSPECT_FILES_ROOT"),
+		BaseURL:    getenv("CONSPECT_URL"),
+		APIKey:     getenv("CONSPECT_API_KEY"),
+		APIKeyFile: getenv("CONSPECT_API_KEY_FILE"),
+		FilesRoot:  getenv("CONSPECT_FILES_ROOT"),
 	}
 	cfg, _, err := prepareConfig(cfg)
 	if err != nil {

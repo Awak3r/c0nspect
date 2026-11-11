@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -35,7 +36,9 @@ func testConfig(t *testing.T, source string) conspectclient.Config {
 
 func invoke(ctx context.Context, cfg conspectclient.Config, args ...string) (string, error) {
 	var out bytes.Buffer
-	err := run(ctx, args, func() (conspectclient.Config, error) { return cfg, nil }, &out)
+	err := run(ctx, args, func(string) func() (conspectclient.Config, error) {
+		return func() (conspectclient.Config, error) { return cfg, nil }
+	}, &out)
 	return out.String(), err
 }
 
@@ -311,7 +314,9 @@ func TestEnvironmentCredentials(t *testing.T) {
 			t.Setenv("CONSPECT_API_KEY", testKey)
 		}
 		var out bytes.Buffer
-		if err := run(context.Background(), uploadArgs("note.md"), conspectclient.ConfigFromEnv, &out); err != nil {
+		if err := run(context.Background(), uploadArgs("note.md"), func(string) func() (conspectclient.Config, error) {
+			return conspectclient.ConfigFromEnv
+		}, &out); err != nil {
 			t.Fatal(err)
 		}
 		assertPrivate(t, out.String(), testKey, keyFile, cfg.FilesRoot)
@@ -383,12 +388,119 @@ func TestTimeoutNeverRetries(t *testing.T) {
 
 func TestHelpNeedsNoConfiguration(t *testing.T) {
 	var out bytes.Buffer
-	err := run(context.Background(), []string{"--help"}, func() (conspectclient.Config, error) {
+	err := run(context.Background(), []string{"--help"}, func(string) func() (conspectclient.Config, error) {
 		t.Fatal("help read configuration")
-		return conspectclient.Config{}, nil
+		return func() (conspectclient.Config, error) { return conspectclient.Config{}, nil }
 	}, &out)
 	if err != nil || out.String() != usage {
 		t.Fatal("help failed")
+	}
+}
+
+func TestMissingDefaultConfigUsesEnvironment(t *testing.T) {
+	if configured, err := os.UserConfigDir(); err == nil {
+		if _, err := os.Stat(filepath.Join(configured, "conspect", "upload.json")); err == nil {
+			t.Skip("a real default config file exists on this machine")
+		}
+	}
+	source := "# Env only\n\nbody\n"
+	cfg := testConfig(t, source)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("CONSPECT_FILES_ROOT", cfg.FilesRoot)
+	t.Setenv("CONSPECT_API_KEY", testKey)
+	t.Setenv("CONSPECT_API_KEY_FILE", "")
+	var out bytes.Buffer
+	if err := run(context.Background(), append(uploadArgs("note.md"), "--check"),
+		func(string) func() (conspectclient.Config, error) { return configLoader("") }, &out); err != nil {
+		t.Fatal(err)
+	}
+	if decodeReceipt(t, out.String())["status"] != "ready" {
+		t.Fatal("environment-only configuration failed")
+	}
+}
+
+func TestConfigFileLoadsAndEnvironmentOverrides(t *testing.T) {
+	source := "# From config\n\nbody\n"
+	cfg := testConfig(t, source)
+	configDir := t.TempDir()
+	keyFile := filepath.Join(configDir, "api-key")
+	if err := os.WriteFile(keyFile, []byte(testKey+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The file deliberately names an empty files root: only honoring the file
+	// makes --check fail, only honoring the environment override makes it pass.
+	wrongRoot := t.TempDir()
+	configPath := filepath.Join(configDir, "upload.json")
+	configBody := fmt.Sprintf(`{"url": %q, "files_root": %q, "key_file": %q}`, cfg.BaseURL, wrongRoot, keyFile)
+	if err := os.WriteFile(configPath, []byte(configBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"CONSPECT_URL", "CONSPECT_FILES_ROOT", "CONSPECT_API_KEY", "CONSPECT_API_KEY_FILE"} {
+		t.Setenv(name, "")
+	}
+	loader := func(string) func() (conspectclient.Config, error) { return configLoader(configPath) }
+	var out bytes.Buffer
+	if err := run(context.Background(), append(uploadArgs("note.md"), "--check"), loader, &out); err == nil {
+		t.Fatal("config file files_root was not honored")
+	}
+	// A nonempty environment variable overrides the same config field.
+	t.Setenv("CONSPECT_FILES_ROOT", cfg.FilesRoot)
+	out.Reset()
+	if err := run(context.Background(), append(uploadArgs("note.md"), "--check"), loader, &out); err != nil {
+		t.Fatal(err)
+	}
+	if decodeReceipt(t, out.String())["status"] != "ready" {
+		t.Fatal("environment override failed")
+	}
+	assertPrivate(t, out.String(), testKey, keyFile, cfg.FilesRoot, wrongRoot)
+	// An explicit key variable together with the config key file is ambiguous.
+	t.Setenv("CONSPECT_API_KEY", testKey)
+	if err := run(context.Background(), append(uploadArgs("note.md"), "--check"), loader, io.Discard); err == nil {
+		t.Fatal("ambiguous key sources were accepted")
+	}
+}
+
+func TestConfigFileValidation(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	cases := []struct {
+		name, body string
+	}{
+		{"unknown.json", `{"files_root": "/tmp", "binary": "/old/launcher"}`},
+		{"not-json.json", "not json"},
+		{"two-objects.json", `{"url": "https://conspect.awak3r.ru"} {"url": "https://other.invalid"}`},
+		{"control.json", "{\"files_root\": \"/tmp\\u0000hidden\"}"},
+	}
+	for _, tc := range cases {
+		path := write(tc.name, tc.body)
+		var out bytes.Buffer
+		if err := run(context.Background(), append(uploadArgs("note.md"), "--check", "--config", path),
+			func(path string) func() (conspectclient.Config, error) { return configLoader(path) }, &out); err == nil {
+			t.Fatal("invalid config accepted: " + tc.name)
+		}
+	}
+	// An explicitly requested config must exist; the default one may be absent.
+	var out bytes.Buffer
+	if err := run(context.Background(), append(uploadArgs("note.md"), "--check", "--config", filepath.Join(dir, "absent.json")),
+		func(path string) func() (conspectclient.Config, error) { return configLoader(path) }, &out); err == nil {
+		t.Fatal("missing explicit config accepted")
+	}
+	// A symlinked config file is refused.
+	symlink := filepath.Join(dir, "link.json")
+	if err := os.Symlink(filepath.Join(dir, "unknown.json"), symlink); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	if err := run(context.Background(), append(uploadArgs("note.md"), "--check", "--config", symlink),
+		func(path string) func() (conspectclient.Config, error) { return configLoader(path) }, &out); err == nil {
+		t.Fatal("symlinked config accepted")
 	}
 }
 
