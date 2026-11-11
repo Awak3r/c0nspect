@@ -32,23 +32,31 @@ func (a *App) remoteMCP(w http.ResponseWriter, r *http.Request) {
 	if !a.oauthLimit(w, r, "mcp", 240, time.Minute) {
 		return
 	}
-	fields := strings.Fields(r.Header.Get("Authorization"))
-	if len(r.Header.Values("Authorization")) != 1 || len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") || !strings.HasPrefix(fields[1], "csa_") || len(fields[1]) > 128 {
+	authorization := r.Header.Get("Authorization")
+	fields := strings.Fields(authorization)
+	if len(r.Header.Values("Authorization")) != 1 || len(fields) != 2 || authorization != fields[0]+" "+fields[1] || !strings.EqualFold(fields[0], "Bearer") || (!strings.HasPrefix(fields[1], "csp_") && !strings.HasPrefix(fields[1], "csa_")) || len(fields[1]) > 128 {
 		a.mcpUnauthorized(w, r)
 		return
 	}
-	grant, err := a.oauth.OAuthGrantByAccess(r.Context(), tokenHash(fields[1]), a.oauthResource())
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			a.mcpUnauthorized(w, r)
-		} else {
-			a.oauthError(w, r, 503, "temporarily_unavailable")
+	apiSecret := fields[1]
+	isOAuth := strings.HasPrefix(apiSecret, "csa_")
+	var oauthKeyID string
+	if isOAuth {
+		grant, err := a.oauth.OAuthGrantByAccess(r.Context(), tokenHash(apiSecret), a.oauthResource())
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				a.mcpUnauthorized(w, r)
+			} else {
+				a.oauthError(w, r, 503, "temporarily_unavailable")
+			}
+			return
 		}
-		return
+		apiSecret = a.oauthAPIKey(grant.ID)
+		oauthKeyID = grant.KeyID
 	}
-	apiSecret := a.oauthAPIKey(grant.ID)
+	// Both credentials use the REST key's current scopes, grants and lifecycle.
 	key, err := a.db.APIKeyByHash(r.Context(), tokenHash(apiSecret))
-	if err != nil || key.ID != grant.KeyID {
+	if err != nil || (isOAuth && key.ID != oauthKeyID) {
 		if err == nil || errors.Is(err, store.ErrNotFound) {
 			a.mcpUnauthorized(w, r)
 		} else {
