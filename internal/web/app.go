@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -81,7 +82,7 @@ func New(db store.Repository, cfg Config) (*App, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "uploads"), 0700); err != nil {
 		return nil, fmt.Errorf("create uploads directory: %w", err)
 	}
-	t, err := template.New("pages").Funcs(template.FuncMap{"date": func(t time.Time) string { return t.UTC().Format("02.01.2006 15:04") }, "join": strings.Join, "stylesheet": stylesheetURL, "readerAsset": readerAsset, "now": time.Now}).Parse(pageTemplates)
+	t, err := template.New("pages").Funcs(template.FuncMap{"date": func(t time.Time) string { return t.UTC().Format("02.01.2006 15:04") }, "join": strings.Join, "contains": slices.Contains[[]string, string], "stylesheet": stylesheetURL, "readerAsset": readerAsset, "now": time.Now}).Parse(pageTemplates)
 	if err != nil {
 		return nil, err
 	}
@@ -148,6 +149,7 @@ func (a *App) routes() {
 	m.HandleFunc("GET /settings/api-keys", a.owner(a.keysPage))
 	m.HandleFunc("POST /settings/api-keys", a.owner(a.createKey))
 	m.HandleFunc("POST /settings/api-keys/{keyID}/revoke", a.owner(a.revokeKey))
+	m.HandleFunc("POST /settings/api-keys/{keyID}/access", a.owner(a.updateKeyAccess))
 	m.HandleFunc("GET /api/v1/projects", a.apiProjects)
 	m.HandleFunc("GET /api/v1/projects/{projectID}/notes", a.apiNotes)
 	m.HandleFunc("GET /api/v1/notes/{noteID}", a.apiGetNote)

@@ -190,10 +190,14 @@ func (a *App) oauthApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scopes := unique(r.PostForm["scopes"])
-	projects, notes := unique(r.PostForm["projects"]), unique(r.PostForm["notes"])
+	allProjects, projects, notes, err := keyResourceAccess(r)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
 	requested, _ := parseOAuthScopes(request.Scope)
-	if len(scopes) == 0 || len(scopes) > 4 || len(projects)+len(notes) == 0 || len(projects)+len(notes) > 256 {
-		a.fail(w, r, &HTTPError{422, "invalid_scope", "Выберите разрешения и хотя бы один проект или конспект"})
+	if len(scopes) == 0 || len(scopes) > 4 {
+		a.fail(w, r, &HTTPError{422, "invalid_scope", "Выберите разрешения"})
 		return
 	}
 	for _, scope := range scopes {
@@ -210,7 +214,7 @@ func (a *App) oauthApprove(w http.ResponseWriter, r *http.Request) {
 	if len([]rune(name)) > 300 {
 		name = string([]rune(name)[:300])
 	}
-	key := store.APIKey{ID: keyID, Name: name, TokenHash: tokenHash(a.oauthAPIKey(id)), Scopes: scopes, ProjectIDs: projects, NoteIDs: notes}
+	key := store.APIKey{ID: keyID, Name: name, TokenHash: tokenHash(a.oauthAPIKey(id)), Scopes: scopes, AllProjects: allProjects, ProjectIDs: projects, NoteIDs: notes}
 	if err := a.oauth.CreateOAuthGrant(r.Context(), grant, key); err != nil {
 		if errors.Is(err, store.ErrForbidden) {
 			a.oauthError(w, r, 400, "invalid_scope")

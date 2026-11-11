@@ -511,6 +511,8 @@ const pageTemplates = `
           <label class="check"><input type="checkbox" name="scopes" value="attachments:write"> <span>Загружать изображения <code>attachments:write</code></span></label>
         </div>
       </fieldset>
+      <label class="check"><input type="checkbox" name="all_projects" value="1" aria-describedby="all-projects-hint"> <span>Все текущие и будущие проекты</span></label>
+      <p class="hint" id="all-projects-hint">Ключ получит доступ и к материалам проектов, которые вы создадите в будущем.</p>
       <p class="hint" id="access-hint">Для создания конспектов нужен доступ к проекту.</p>
       <div class="form-grid">
         <fieldset aria-describedby="access-hint projects-hint">
@@ -556,6 +558,7 @@ const pageTemplates = `
       <div class="key-card-body">
       <dl class="key-details">
         <dt>Разрешения</dt><dd>{{if .Scopes}}{{join .Scopes ", "}}{{else}}Не выданы{{end}}</dd>
+        <dt>Все текущие и будущие проекты</dt><dd>{{if .AllProjects}}Да{{else}}Нет{{end}}</dd>
         <dt>Проекты (ID)</dt><dd class="mono">{{if .ProjectIDs}}{{join .ProjectIDs ", "}}{{else}}Не выбраны{{end}}</dd>
         <dt>Конспекты (ID)</dt><dd class="mono">{{if .NoteIDs}}{{join .NoteIDs ", "}}{{else}}Не выбраны{{end}}</dd>
         <dt>Создан</dt><dd><time>{{date .CreatedAt}} UTC</time></dd>
@@ -563,6 +566,26 @@ const pageTemplates = `
         <dt>Последнее обращение</dt><dd>{{with .LastUsedAt}}<time>{{date .}} UTC</time>{{else}}Ещё не использовался{{end}}</dd>
         {{with .RevokedAt}}<dt>Отозван</dt><dd><time>{{date .}} UTC</time></dd>{{end}}
       </dl>
+      {{if and (not .RevokedAt) (or (not .ExpiresAt) (.ExpiresAt.After now))}}
+      {{$key := .}}
+      <form class="stack" method="post" action="/settings/api-keys/{{.ID}}/access">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <fieldset aria-describedby="key-{{.ID}}-access-hint">
+          <legend>Изменить доступ к материалам</legend>
+          <label class="check"><input type="checkbox" name="all_projects" value="1"{{if .AllProjects}} checked{{end}}> <span>Все текущие и будущие проекты</span></label>
+          <p class="hint" id="key-{{.ID}}-access-hint">При выборе ключ получит доступ и к будущим материалам новых проектов. Разрешения и секрет ключа не изменятся.</p>
+          <div class="form-grid">
+            <fieldset><legend>Проекты</legend><div class="choice-list">
+              {{range $.Projects}}<label class="check"><input type="checkbox" name="projects" value="{{.ID}}"{{if contains $key.ProjectIDs .ID}} checked{{end}}> <span>{{.Name}}</span></label>{{else}}<p class="muted">Проектов пока нет.</p>{{end}}
+            </div></fieldset>
+            <fieldset><legend>Отдельные конспекты</legend><div class="choice-list">
+              {{range $.Notes}}<label class="check"><input type="checkbox" name="notes" value="{{.ID}}"{{if contains $key.NoteIDs .ID}} checked{{end}}> <span>{{.Title}}</span></label>{{else}}<p class="muted">Конспектов пока нет.</p>{{end}}
+            </div></fieldset>
+          </div>
+        </fieldset>
+        <div><button type="submit">Сохранить доступ</button></div>
+      </form>
+      {{end}}
       {{if not .RevokedAt}}
       <form method="post" action="/settings/api-keys/{{.ID}}/revoke">
         <input type="hidden" name="csrf" value="{{$.CSRF}}">
@@ -592,6 +615,8 @@ const pageTemplates = `
     <fieldset><legend>Разрешения</legend>
       {{range .OAuthScopes}}<label class="check"><input type="checkbox" name="scopes" value="{{.}}"{{if eq . "notes:read"}} checked{{end}}> <span>{{if eq . "notes:read"}}Читать конспекты{{else if eq . "notes:write"}}Создавать и изменять конспекты{{else if eq . "attachments:read"}}Читать изображения{{else}}Загружать изображения{{end}} <code>{{.}}</code></span></label>{{end}}
     </fieldset>
+    <label class="check"><input type="checkbox" name="all_projects" value="1" aria-describedby="oauth-all-projects-hint"> <span>Все текущие и будущие проекты</span></label>
+    <p class="hint" id="oauth-all-projects-hint">ChatGPT получит доступ и к материалам проектов, которые вы создадите в будущем.</p>
     <fieldset><legend>Проекты</legend><div class="choice-list">
       {{range .Projects}}<label class="check"><input type="checkbox" name="projects" value="{{.ID}}"> <span>{{.Name}}</span></label>{{else}}<p>Проектов нет.</p>{{end}}
     </div><p class="hint">Включая будущие конспекты выбранных проектов.</p></fieldset>

@@ -17,6 +17,9 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+//go:embed schema_v2.sql
+var schemaV2SQL string
+
 // Store is a PostgreSQL Repository backed by pgxpool. All cross-process
 // coordination lives in PostgreSQL.
 type Store struct {
@@ -51,14 +54,22 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 			return err
 		}
-		if version > 1 {
-			return fmt.Errorf("database schema version %d is newer than supported version 1", version)
+		if version > 2 {
+			return fmt.Errorf("database schema version %d is newer than supported version 2", version)
 		}
 		if version == 0 {
 			if _, err := tx.Exec(ctx, schemaSQL); err != nil {
 				return err
 			}
-			_, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES (1)`)
+			if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES (1)`); err != nil {
+				return err
+			}
+		}
+		if version < 2 {
+			if _, err := tx.Exec(ctx, schemaV2SQL); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES (2)`)
 			return err
 		}
 		return nil
@@ -155,7 +166,7 @@ func scanShare(row scanner) (link ShareLink, err error) {
 }
 
 func scanKey(row scanner) (key APIKey, err error) {
-	err = row.Scan(&key.ID, &key.Name, &key.TokenHash, &key.Scopes, &key.ProjectIDs, &key.NoteIDs,
+	err = row.Scan(&key.ID, &key.Name, &key.TokenHash, &key.Scopes, &key.AllProjects, &key.ProjectIDs, &key.NoteIDs,
 		&key.CreatedAt, &key.ExpiresAt, &key.RevokedAt, &key.LastUsedAt)
 	return
 }
@@ -342,7 +353,7 @@ func (s *Store) writeAs(ctx context.Context, actor Actor, fn func(pgx.Tx, APIKey
 		var key APIKey
 		if !actor.Owner {
 			var err error
-			key, err = scanKey(tx.QueryRow(ctx, `SELECT id, name, token_hash, scopes, project_ids, note_ids,
+			key, err = scanKey(tx.QueryRow(ctx, `SELECT id, name, token_hash, scopes, all_projects, project_ids, note_ids,
 				created_at, expires_at, revoked_at, last_used_at FROM api_keys WHERE id = $1 FOR UPDATE`, actor.KeyID))
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrForbidden
@@ -629,7 +640,7 @@ func (s *Store) RevokeShare(ctx context.Context, noteID string) error {
 
 func (s *Store) APIKeys(ctx context.Context) (keys []APIKey, err error) {
 	err = s.withConn(ctx, func(conn *pgx.Conn) error {
-		keys, err = queryAll(ctx, conn, `SELECT id, name, token_hash, scopes, project_ids, note_ids,
+		keys, err = queryAll(ctx, conn, `SELECT id, name, token_hash, scopes, all_projects, project_ids, note_ids,
 			created_at, expires_at, revoked_at, last_used_at FROM api_keys ORDER BY created_at DESC, id`, scanKey)
 		return err
 	})
@@ -644,7 +655,7 @@ func (s *Store) APIKeyByHash(ctx context.Context, hash string) (key APIKey, err 
 		}
 		key, err = scanKey(tx.QueryRow(ctx, `UPDATE api_keys SET last_used_at = clock_timestamp()
 			WHERE id = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > clock_timestamp())
-			RETURNING id, name, token_hash, scopes, project_ids, note_ids, created_at, expires_at, revoked_at, last_used_at`, id))
+			RETURNING id, name, token_hash, scopes, all_projects, project_ids, note_ids, created_at, expires_at, revoked_at, last_used_at`, id))
 		return err
 	})
 	if err != nil {
@@ -665,13 +676,57 @@ func (s *Store) CreateAPIKey(ctx context.Context, input APIKey) (key APIKey, err
 		input.ID = NewID()
 	}
 	err = s.withConn(ctx, func(conn *pgx.Conn) error {
-		key, err = scanKey(conn.QueryRow(ctx, `INSERT INTO api_keys (id, name, token_hash, scopes, project_ids, note_ids, expires_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, name, token_hash, scopes, project_ids, note_ids,
+		key, err = scanKey(conn.QueryRow(ctx, `INSERT INTO api_keys (id, name, token_hash, scopes, all_projects, project_ids, note_ids, expires_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, name, token_hash, scopes, all_projects, project_ids, note_ids,
 			created_at, expires_at, revoked_at, last_used_at`, input.ID, input.Name, input.TokenHash,
-			stringsOrEmpty(input.Scopes), stringsOrEmpty(input.ProjectIDs), stringsOrEmpty(input.NoteIDs), input.ExpiresAt))
+			stringsOrEmpty(input.Scopes), input.AllProjects, stringsOrEmpty(input.ProjectIDs), stringsOrEmpty(input.NoteIDs), input.ExpiresAt))
 		return err
 	})
 	return
+}
+
+// lockKeyResources coordinates grant validation with deletion and note moves.
+// Callers updating an existing key must lock its row before taking this lock.
+func lockKeyResources(ctx context.Context, tx pgx.Tx, projectIDs, noteIDs []string) error {
+	if err := lockStructure(ctx, tx); err != nil {
+		return err
+	}
+	for _, id := range projectIDs {
+		var found string
+		if err := tx.QueryRow(ctx, `SELECT id FROM projects WHERE id = $1 FOR KEY SHARE`, id).Scan(&found); err != nil {
+			return err
+		}
+	}
+	for _, id := range noteIDs {
+		var found string
+		if err := tx.QueryRow(ctx, `SELECT id FROM notes WHERE id = $1 FOR KEY SHARE`, id).Scan(&found); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UpdateAPIKeyAccess is owner-only; the caller authenticates the owner. Only
+// resource grants change, preserving the token, scopes and lifecycle timestamps.
+func (s *Store) UpdateAPIKeyAccess(ctx context.Context, id string, allProjects bool, projectIDs, noteIDs []string) error {
+	return s.transact(ctx, func(tx pgx.Tx) error {
+		var found string
+		if err := tx.QueryRow(ctx, `SELECT id FROM api_keys WHERE id = $1 FOR UPDATE`, id).Scan(&found); err != nil {
+			return err
+		}
+		if err := activeActor(ctx, tx, id); err != nil {
+			return err
+		}
+		if err := lockKeyResources(ctx, tx, projectIDs, noteIDs); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE api_keys SET all_projects = $2, project_ids = $3, note_ids = $4 WHERE id = $1`,
+			id, allProjects, stringsOrEmpty(projectIDs), stringsOrEmpty(noteIDs)); err != nil {
+			return err
+		}
+		// Expiry can pass while waiting on structure or resource locks.
+		return activeActor(ctx, tx, id)
+	})
 }
 
 func (s *Store) RevokeAPIKey(ctx context.Context, id string) error {

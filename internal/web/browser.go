@@ -480,16 +480,57 @@ func unique(values []string) []string {
 	}
 	return result
 }
+func keyResourceAccess(r *http.Request) (bool, []string, []string, error) {
+	values, present := r.PostForm["all_projects"]
+	if present && (len(values) != 1 || values[0] != "1") {
+		return false, nil, nil, &HTTPError{422, "invalid_access", "Некорректный выбор доступа ко всем проектам"}
+	}
+	allProjects := present
+	if len(r.PostForm["projects"])+len(r.PostForm["notes"]) > 256 {
+		return false, nil, nil, &HTTPError{422, "invalid_access", "Выберите не более 256 проектов и конспектов"}
+	}
+	projects, notes := unique(r.PostForm["projects"]), unique(r.PostForm["notes"])
+	if !allProjects && len(projects)+len(notes) == 0 {
+		return false, nil, nil, &HTTPError{422, "invalid_access", "Выберите хотя бы один проект или конспект либо все текущие и будущие проекты"}
+	}
+	for _, ids := range [][]string{projects, notes} {
+		for _, id := range ids {
+			if strings.TrimSpace(id) == "" {
+				return false, nil, nil, &HTTPError{422, "invalid_access", "Некорректный идентификатор ресурса"}
+			}
+		}
+	}
+	return allProjects, projects, notes, nil
+}
+
+func (a *App) updateKeyAccess(w http.ResponseWriter, r *http.Request) {
+	allProjects, projects, notes, err := keyResourceAccess(r)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	if err := a.db.UpdateAPIKeyAccess(r.Context(), r.PathValue("keyID"), allProjects, projects, notes); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	http.Redirect(w, r, "/settings/api-keys", http.StatusSeeOther)
+}
+
 func (a *App) createKey(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	if !validTitle(name) {
 		a.fail(w, r, &HTTPError{422, "invalid_name", "Укажите название клиента до 300 символов"})
 		return
 	}
-	scopes, projects, notes := unique(r.Form["scopes"]), unique(r.Form["projects"]), unique(r.Form["notes"])
+	allProjects, projects, notes, err := keyResourceAccess(r)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	scopes := unique(r.PostForm["scopes"])
 	allowed := map[string]bool{"notes:read": true, "notes:write": true, "attachments:read": true, "attachments:write": true}
-	if len(scopes) == 0 || len(scopes) > 4 || len(projects)+len(notes) == 0 || len(projects)+len(notes) > 256 {
-		a.fail(w, r, &HTTPError{422, "invalid_scope", "Выберите права и хотя бы один проект или конспект (максимум 256)"})
+	if len(scopes) == 0 || len(scopes) > 4 {
+		a.fail(w, r, &HTTPError{422, "invalid_scope", "Выберите разрешения"})
 		return
 	}
 	for _, s := range scopes {
@@ -520,7 +561,7 @@ func (a *App) createKey(w http.ResponseWriter, r *http.Request) {
 		expires = &t
 	}
 	token := randomToken("csp_")
-	if _, err := a.db.CreateAPIKey(r.Context(), store.APIKey{ID: store.NewID(), Name: name, TokenHash: tokenHash(token), Scopes: scopes, ProjectIDs: projects, NoteIDs: notes, ExpiresAt: expires}); err != nil {
+	if _, err := a.db.CreateAPIKey(r.Context(), store.APIKey{ID: store.NewID(), Name: name, TokenHash: tokenHash(token), Scopes: scopes, AllProjects: allProjects, ProjectIDs: projects, NoteIDs: notes, ExpiresAt: expires}); err != nil {
 		a.fail(w, r, err)
 		return
 	}

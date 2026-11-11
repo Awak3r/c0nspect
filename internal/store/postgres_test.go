@@ -175,7 +175,7 @@ func TestPostgresMigrationsOwnerAndSessions(t *testing.T) {
 	}
 	conn := db.connect(t)
 	var migrations int
-	if err := conn.QueryRow(db.ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = 1`).Scan(&migrations); err != nil || migrations != 1 {
+	if err := conn.QueryRow(db.ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version IN (1, 2)`).Scan(&migrations); err != nil || migrations != 2 {
 		t.Fatalf("migrations = %d, err = %v", migrations, err)
 	}
 	_, err := s.Owner(db.ctx)

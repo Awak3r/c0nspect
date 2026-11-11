@@ -3,7 +3,7 @@
   "info": {
     "title": "Conspect API",
     "version": "0.4.0",
-    "description": "REST contract used by the separately run cmd/conspect-mcp Go stdio adapter and other clients. These HTTP endpoints do not expose the MCP protocol; the adapter supplies tools and ADHD note-writing instructions to the client's model. The server base is /api/v1: append each API path to that base, including /openapi.json, which is public at /api/v1/openapi.json. The origin-root /healthz probe overrides the server base. Use HTTPS in production. API keys start with csp_ and are sent only in Authorization: Bearer, never in URLs. Resource selection (projects and/or individual notes) and scopes are checked independently on every request, including attachments. Write scopes do not imply read scopes. API keys cannot delete resources, manage projects or sharing, issue keys, or change owner settings. Public share tokens and owner session cookies are not API credentials."
+    "description": "REST contract used by the separately run cmd/conspect-mcp Go stdio adapter and other clients. These HTTP endpoints do not expose the MCP protocol; the adapter supplies tools and ADHD note-writing instructions to the client's model. The server base is /api/v1: append each API path to that base, including /openapi.json, which is public at /api/v1/openapi.json. The origin-root /healthz probe overrides the server base. Use HTTPS in production. API keys start with csp_ and are sent only in Authorization: Bearer, never in URLs. Resource selection (specific projects, individual notes, or an explicit owner-approved all-current-and-future-projects grant) and scopes are checked independently on every request, including attachments. Existing keys remain restricted by default; owners can update resource grants without replacing their token or OAuth connection. Write scopes do not imply read scopes. API keys cannot delete resources, manage projects or sharing, issue keys, or change owner settings. Public share tokens and owner session cookies are not API credentials."
   },
   "servers": [
     {"url": "/api/v1", "description": "Same origin API base; append paths to this base. Canonical APP_BASE_URL uses HTTPS in production."}
@@ -21,7 +21,7 @@
         "operationId": "listProjects",
         "tags": ["Projects"],
         "summary": "List only projects visible to this key",
-        "description": "Requires notes:read. Include explicitly granted projects and the current parent projects of individually granted notes (including their project metadata); never reveal unrelated projects or neighboring notes. The response is an object with a projects array, not a bare array.",
+        "description": "Requires notes:read. Include explicitly granted projects and the current parent projects of individually granted notes (including their project metadata). An explicit all_projects grant includes all current projects, even empty ones, and projects created later. Without that grant, never reveal unrelated projects or neighboring notes. Resource grants are read on each request, not cached in the agent connection. The response is an object with a projects array, not a bare array.",
         "x-required-scopes": ["notes:read"],
         "responses": {
           "200": {
@@ -63,7 +63,7 @@
         "operationId": "createNote",
         "tags": ["Notes"],
         "summary": "Create a note in an explicitly allowed project",
-        "description": "Requires notes:write and a project-level grant. A key restricted to individual notes cannot create neighboring notes. Creates a private note with version 1. Returns the flat Note object, not {note: ...}. Both title and markdown are required. The JSON wire body is bounded to 6 * MAX_MARKDOWN_BYTES + 8192 bytes (12591104 by default); decoded Markdown has its separate MAX_MARKDOWN_BYTES limit. Invalid UTF-8 returns 422. This operation has no promised idempotency key; blindly retrying an uncertain POST can create duplicates.",
+        "description": "Requires notes:write and a project-level grant (specific project or explicit all_projects). A key restricted to individual notes cannot create neighboring notes. Creates a private note with version 1. Returns the flat Note object, not {note: ...}. Both title and markdown are required. The JSON wire body is bounded to 6 * MAX_MARKDOWN_BYTES + 8192 bytes (12591104 by default); decoded Markdown has its separate MAX_MARKDOWN_BYTES limit. Invalid UTF-8 returns 422. This operation has no promised idempotency key; blindly retrying an uncertain POST can create duplicates.",
         "x-required-scopes": ["notes:write"],
         "requestBody": {
           "required": true,

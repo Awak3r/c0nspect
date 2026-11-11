@@ -54,8 +54,8 @@ type OAuthGrant struct {
 	RefreshExpiresAt time.Time
 }
 
-// InitOAuth deliberately leaves the base schema_migrations at version 1 so an
-// older application can still open the database after a rollback.
+// InitOAuth versions OAuth tables independently and leaves the current base
+// schema_migrations version unchanged.
 func (s *Store) InitOAuth(ctx context.Context) error {
 	return s.transact(ctx, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':conspect:oauth-migrations', 0))`); err != nil {
@@ -164,7 +164,7 @@ func (s *Store) OAuthClient(ctx context.Context, id string) (OAuthClient, error)
 }
 
 func validateOAuthKey(key APIKey) error {
-	if len(key.Scopes) == 0 || len(key.Scopes) > 4 || len(key.ProjectIDs)+len(key.NoteIDs) == 0 || len(key.ProjectIDs)+len(key.NoteIDs) > 256 {
+	if len(key.Scopes) == 0 || len(key.Scopes) > 4 || (!key.AllProjects && len(key.ProjectIDs)+len(key.NoteIDs) == 0) || len(key.ProjectIDs)+len(key.NoteIDs) > 256 {
 		return fmt.Errorf("%w: invalid OAuth key scopes or resource count", ErrForbidden)
 	}
 	for _, scope := range key.Scopes {
@@ -202,26 +202,14 @@ func (s *Store) CreateOAuthGrant(ctx context.Context, grant OAuthGrant, key APIK
 	return s.transact(ctx, func(tx pgx.Tx) error {
 		// Coordinate with project deletion and note moves while checking the
 		// selected resources. api_keys uses arrays rather than foreign keys.
-		if err := lockStructure(ctx, tx); err != nil {
+		if err := lockKeyResources(ctx, tx, key.ProjectIDs, key.NoteIDs); err != nil {
 			return err
-		}
-		for _, id := range key.ProjectIDs {
-			var found string
-			if err := tx.QueryRow(ctx, `SELECT id FROM projects WHERE id = $1 FOR KEY SHARE`, id).Scan(&found); err != nil {
-				return err
-			}
-		}
-		for _, id := range key.NoteIDs {
-			var found string
-			if err := tx.QueryRow(ctx, `SELECT id FROM notes WHERE id = $1 FOR KEY SHARE`, id).Scan(&found); err != nil {
-				return err
-			}
 		}
 		// Keep this INSERT identical to CreateAPIKey, on this transaction's
 		// connection: calling CreateAPIKey here would commit independently.
-		if _, err := tx.Exec(ctx, `INSERT INTO api_keys (id, name, token_hash, scopes, project_ids, note_ids, expires_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`, key.ID, key.Name, key.TokenHash,
-			stringsOrEmpty(key.Scopes), stringsOrEmpty(key.ProjectIDs), stringsOrEmpty(key.NoteIDs), key.ExpiresAt); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO api_keys (id, name, token_hash, scopes, all_projects, project_ids, note_ids, expires_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, key.ID, key.Name, key.TokenHash,
+			stringsOrEmpty(key.Scopes), key.AllProjects, stringsOrEmpty(key.ProjectIDs), stringsOrEmpty(key.NoteIDs), key.ExpiresAt); err != nil {
 			return err
 		}
 		// Caller-supplied access/refresh credentials and expiries are ignored:

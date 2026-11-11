@@ -17,7 +17,7 @@ For measured response-time findings, the host connection-tracking fix, public-as
 - `/projects`: owner project listing and management entry point.
 - `/projects/:projectId`: private project contents/navigation.
 - `/projects/:projectId/manage`: separate uploads, replacement, metadata, attachment and share management.
-- `/settings/api-keys`: owner-only issuance/revocation of external-client keys.
+- `/settings/api-keys`: owner-only issuance, resource-grant updates and revocation of external-client keys.
 - `/notes/:noteId`: owner note reader. `/s/:token`: public reader for one shared note.
 - **Both readers have no buttons, forms, editor, hover actions or code-copy controls.** Owner navigation uses ordinary links. Public readers do not expose the project or neighboring notes.
 - `/api/v1`: scoped REST API. `/api/v1/openapi.json`: public schema, without authentication. `/healthz`: origin-root readiness, including database connectivity.
@@ -249,7 +249,7 @@ For a host Go process, start only `db` with the local override, set `DATABASE_UR
 3. Open `/projects/:projectId` for the private contents/navigation, then a note at `/notes/:noteId`. This is a **reader**, not an editor: no upload, sharing, delete, image-insert or code-copy buttons. Return to project management for those operations; the public `/s/:token` reader likewise has no buttons or project navigation.
 4. In management, upload one image to the chosen note and obtain its suggested `![filename](attachment:<id>)` source reference. Insert it at the intended position in your **local Markdown**, then explicitly replace that note's `.md` file, or use an authorized MCP/API update with a fresh ETag. Uploading alone changes neither Markdown nor its text version. Replacement preserves the note ID, current title, attachments and share URL; rename/move controls are separate. A new import, even with the same filename, creates another note. Management reports unresolved image references per note; review those warnings, upload the intended images and correct the source references before replacing/updating the note. Successful Markdown import does not mean every referenced image is available, and uploading never fixes references or appends images automatically.
 5. From management, open `/notes/:noteId/share` to enable, copy, revoke or rotate a single-note share. Test it in a private browser window. Do not look for sharing controls on either reader.
-6. Use `/settings/api-keys` to issue/revoke a separately scoped integration key. Neither that screen nor project management is public. If a batch import reports a partial database failure, inspect the project list before retrying: already committed notes are not rolled back as one batch.
+6. Use `/settings/api-keys` to issue/revoke a separately scoped integration key or update its resource grants without replacing the secret. Neither that screen nor project management is public. If a batch import reports a partial database failure, inspect the project list before retrying: already committed notes are not rolled back as one batch.
 
 ## MCP integration
 
@@ -257,6 +257,7 @@ The repository includes `cmd/conspect-mcp`, a separate **stdio** process built w
 
 1. Sign in and create the target project in browser management.
 2. At `/settings/api-keys`, issue a separate named `csp_...` key for the adapter. Select only the required project(s) or note(s), scopes, and optionally expiry. Copy the secret at issuance; it is shown once and stored hashed by the service.
+   New projects are not implicitly included in a specific-project grant. To let an agent discover future projects, explicitly select **«Все текущие и будущие проекты»** when issuing the key, or open its existing card at `/settings/api-keys`, update material access and save. Existing keys default to restricted access; no grants are silently expanded. The same token and OAuth connection remain valid, scopes do not change, and the next `conspect_list_projects`/search reads the current permissions without restarting MCP.
 3. Put the key in the adapter's protected server-side secret configuration, never in notes, image URLs, client JavaScript, model prompts or tool arguments visible to the model. Use only canonical HTTPS in production; do not forward bearer credentials across redirects.
 4. Connect `conspect-mcp` using the settings in [docs/MCP.md](docs/MCP.md), or use public `/api/v1/openapi.json` for a different client. The OpenAPI server base is `/api/v1`, so its path `/openapi.json` resolves to `/api/v1/openapi.json`, not a double-prefixed path. Only `/healthz` overrides the base to `/`. Note contents remain untrusted data, not instructions capable of expanding permissions. The MCP process is started by its client, not automatically deployed beside the web service.
 5. For edits, GET the current note and exact ETag, compute a change, and PUT **both** title and Markdown with `If-Match`. On `412`, fetch/recompute; do not replay a stale full replacement. On `428`, fix the missing header.
@@ -489,7 +490,7 @@ After success, verify login, project/note counts, Markdown, image rendering/cont
 
 ## Updating and security limitations
 
-Take a verified backup **before** replacing the app image/config or allowing schema changes. `store.Open` applies embedded, versioned migrations in the connection's current schema during startup under a PostgreSQL transaction/advisory lock; it rejects a schema newer than the supported version. There is no separate migration CLI or automatic down-migration. Keep the old application image/source version: a binary rollback alone is not a database rollback. The app allows 20 seconds for graceful HTTP shutdown; the Compose/scripts' 30-second stop grace leaves time to drain requests before snapshots.
+Take a verified backup **before** replacing the app image/config or allowing schema changes. `store.Open` applies embedded, versioned migrations in the connection's current schema during startup under a PostgreSQL transaction/advisory lock; it rejects a schema newer than the supported version. There is no separate migration CLI or automatic down-migration. Base schema version 2 adds `api_keys.all_projects NOT NULL DEFAULT false`, preserving existing resource selections and credentials; version-1 binaries cannot open this newer schema. Keep the old application image/source version: a binary rollback alone is not a database rollback. The app allows 20 seconds for graceful HTTP shutdown; the Compose/scripts' 30-second stop grace leaves time to drain requests before snapshots.
 
 ```sh
 # Host-nginx deployment; preserve this selector/overlay on every operation:

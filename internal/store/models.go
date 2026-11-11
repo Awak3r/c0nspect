@@ -73,24 +73,25 @@ type ShareLink struct {
 }
 
 type APIKey struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	TokenHash  string     `json:"-"`
-	Scopes     []string   `json:"scopes"`
-	ProjectIDs []string   `json:"project_ids"`
-	NoteIDs    []string   `json:"note_ids"`
-	CreatedAt  time.Time  `json:"created_at"`
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
-	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
-	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	TokenHash   string     `json:"-"`
+	Scopes      []string   `json:"scopes"`
+	AllProjects bool       `json:"all_projects"`
+	ProjectIDs  []string   `json:"project_ids"`
+	NoteIDs     []string   `json:"note_ids"`
+	CreatedAt   time.Time  `json:"created_at"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
 }
 
 func (k APIKey) HasScope(scope string) bool { return slices.Contains(k.Scopes, scope) }
 func (k APIKey) AllowsNote(n Note, scope string) bool {
-	return k.HasScope(scope) && (slices.Contains(k.ProjectIDs, n.ProjectID) || slices.Contains(k.NoteIDs, n.ID))
+	return k.HasScope(scope) && (k.AllProjects || slices.Contains(k.ProjectIDs, n.ProjectID) || slices.Contains(k.NoteIDs, n.ID))
 }
 func (k APIKey) AllowsProject(id, scope string) bool {
-	return k.HasScope(scope) && slices.Contains(k.ProjectIDs, id)
+	return k.HasScope(scope) && (k.AllProjects || slices.Contains(k.ProjectIDs, id))
 }
 
 type Actor struct {
@@ -129,5 +130,6 @@ type Repository interface {
 	APIKeys(context.Context) ([]APIKey, error)
 	APIKeyByHash(context.Context, string) (APIKey, error)
 	CreateAPIKey(context.Context, APIKey) (APIKey, error)
+	UpdateAPIKeyAccess(ctx context.Context, id string, allProjects bool, projectIDs, noteIDs []string) error
 	RevokeAPIKey(context.Context, string) error
 }

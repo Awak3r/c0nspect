@@ -64,10 +64,14 @@ func (a *App) apiProjects(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ids, err := a.apiProjectIDs(r.Context(), key)
-	if err != nil {
-		a.fail(w, r, err)
-		return
+	var ids map[string]bool
+	if !key.AllProjects {
+		var err error
+		ids, err = a.apiProjectIDs(r.Context(), key)
+		if err != nil {
+			a.fail(w, r, err)
+			return
+		}
 	}
 	projects, err := a.db.Projects(r.Context())
 	if err != nil {
@@ -76,7 +80,7 @@ func (a *App) apiProjects(w http.ResponseWriter, r *http.Request) {
 	}
 	visible := make([]store.Project, 0)
 	for _, project := range projects {
-		if ids[project.ID] {
+		if key.AllProjects || ids[project.ID] {
 			visible = append(visible, project)
 		}
 	}
