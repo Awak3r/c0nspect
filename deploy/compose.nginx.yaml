@@ -1,6 +1,11 @@
-# Production behind an EXISTING host nginx. Do not combine with compose.local.yaml.
+# Production behind an EXISTING external HTTPS proxy. Do not combine with compose.local.yaml.
+# The legacy filename is retained for existing releases, backups and systemd units.
+x-installation-labels: &installation-labels
+  io.conspect.installation: ${CONSPECT_INSTALLATION_ID:-legacy}
+
 services:
   app:
+    labels: *installation-labels
     image: ${CONSPECT_IMAGE:-conspect:local}
     ports:
       - "127.0.0.1:${CONSPECT_HTTP_PORT:-8096}:8080"
@@ -12,6 +17,7 @@ services:
     mem_limit: 256m
 
   db:
+    labels: *installation-labels
     mem_limit: 256m
     command:
       - postgres
@@ -23,3 +29,15 @@ services:
       - work_mem=2MB
       - -c
       - maintenance_work_mem=32MB
+
+volumes:
+  db_data:
+    labels: *installation-labels
+  uploads:
+    labels: *installation-labels
+
+networks:
+  frontend:
+    labels: *installation-labels
+  backend:
+    labels: *installation-labels

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deploy a verified GHCR digest to an existing root-owned host-nginx installation."""
+"""Deploy a verified GHCR digest behind an existing external HTTPS proxy (Caddy/nginx)."""
 
 import argparse
 from datetime import datetime, timezone
@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,7 @@ import operations
 from backup import create_backup
 from check_mcp import check_mcp, mcp_base_url
 from operations import Compose, OperationError, operation_lock, run_command
+from prerequisites import check_compose
 
 IMAGE_PATTERN = r"ghcr\.io/awak3r/c0nspect@sha256:[0-9a-f]{64}"
 
@@ -47,10 +49,10 @@ def replace_image(content, image):
 
 
 def trusted_directory(path):
-    if path.is_symlink() or not path.is_dir():
-        raise OperationError("Deployment paths must be existing real directories.")
     for directory in (path, *path.parents):
-        info = directory.stat()
+        info = directory.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise OperationError("Deployment paths and parents must be real directories, not symbolic links.")
         if info.st_uid != 0 or info.st_mode & 0o022:
             raise OperationError("Deployment paths and parents must be root-owned and not group/other writable.")
 
@@ -127,7 +129,7 @@ def release(source, root, image, username, revision, token):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9\[\]-]*", username):
         raise OperationError("Invalid registry username.")
     if os.geteuid() != 0:
-        raise OperationError("Run as root on the existing host-nginx installation.")
+        raise OperationError("Run as root on the existing installation behind an external HTTPS proxy (Caddy/nginx).")
     trusted_directory(root)
     trusted_directory(source)
     env_path = root / ".env"
@@ -138,7 +140,7 @@ def release(source, root, image, username, revision, token):
         raise OperationError(".env must be root-owned and mode 0600.")
     files = deployment_files(source, root)
     if not (source / "deploy/compose.nginx.yaml").is_file():
-        raise OperationError("Release is missing the host-nginx overlay.")
+        raise OperationError("Release is missing the external HTTPS proxy (Caddy/nginx) overlay.")
     # Ignore inherited overrides: .env is the installation's source of truth.
     for name in list(os.environ):
         if name.startswith("COMPOSE_") or name in {"CONSPECT_IMAGE", "DOCKER_CONFIG", "DOCKER_HOST", "DOCKER_CONTEXT",
@@ -158,6 +160,7 @@ def release(source, root, image, username, revision, token):
             raise OperationError("Backup destination must not be a symlink.")
         if backup_root.exists():
             trusted_directory(backup_root)
+        check_compose()
         current = Compose(nginx=True)
         current.preflight(backup=True)
         if current.states().get("app") != "running":

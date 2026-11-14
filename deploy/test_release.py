@@ -100,6 +100,7 @@ class ReleaseTests(unittest.TestCase):
         # Fail closed if an accidental unmocked subprocess/Docker path is added.
         self.enter(patch.object(subprocess, "run", side_effect=AssertionError("Unexpected real subprocess")))
         self.enter(patch.object(operations, "run_command", side_effect=AssertionError("Unexpected real Docker")))
+        self.compose_check = self.enter(patch.object(release, "check_compose"))
         self.compose = Mock()
         self.compose.image = OLD_IMAGE
         self.compose.env_path = self.env
@@ -111,7 +112,7 @@ class ReleaseTests(unittest.TestCase):
         self.enter(patch.object(release, "operation_lock", side_effect=self.operation_lock))
         self.mcp_check = self.enter(patch.object(release, "check_mcp", side_effect=lambda url: self.event("mcp-check")))
         self.real_atomic_write = release.atomic_write
-        self.enter(patch.object(release, "atomic_write", side_effect=self.record_write))
+        self.writer = self.enter(patch.object(release, "atomic_write", side_effect=self.record_write))
 
     def enter(self, manager):
         value = manager.__enter__()
@@ -244,6 +245,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertLess(self.events.index("live-config"), self.events.index("up"))
         self.assertEqual(self.events[-4:], ["up", "mcp-check", "state-healthy", "unlock"])
         self.mcp_check.assert_called_once_with("https://notes.example.com")
+        self.compose_check.assert_called_once_with()
         self.compose_factory.assert_called_once_with(nginx=True)
         self.compose.preflight.assert_called_once_with(backup=True)
         self.snapshot.assert_called_once_with(self.compose, self.root / "backups")
@@ -324,6 +326,23 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(OperationError):
             self.invoke()
         self.assertEqual(self.events[-3:], ["snapshot", "backup-resume", "unlock"])
+        self.assert_not_activated()
+
+    def test_compose_capability_failure_aborts_before_preflight_pull_backup_or_writes(self):
+        def missing_start_wait():
+            self.assertTrue(self.locked)
+            raise OperationError("Docker Compose start --wait is required.")
+
+        self.compose_check.side_effect = missing_start_wait
+        with self.assertRaisesRegex(OperationError, "start --wait"):
+            self.invoke()
+        self.compose_check.assert_called_once_with()
+        self.compose_factory.assert_not_called()
+        self.docker.assert_not_called()
+        self.snapshot.assert_not_called()
+        self.writer.assert_not_called()
+        self.assertEqual(self.events, ["lock", "unlock"])
+        self.assertFalse(self.backup.exists())
         self.assert_not_activated()
 
     def test_preflight_failure_aborts_before_pull_or_snapshot(self):
