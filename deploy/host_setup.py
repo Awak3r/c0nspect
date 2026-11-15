@@ -1,0 +1,529 @@
+"""Opt-in, isolated host nginx/ACME setup. No Docker or global proxy changes."""
+
+import fcntl
+import hashlib
+import http.client
+import ipaddress
+import json
+import os
+import platform
+import re
+import secrets
+import shlex
+import shutil
+import stat
+import subprocess
+import tempfile
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from operations import OperationError, run_command
+
+SITES_AVAILABLE = Path('/etc/nginx/sites-available')
+SITES_ENABLED = Path('/etc/nginx/sites-enabled')
+ACME_ROOT = Path('/var/lib/conspect-acme')
+LE_ROOT = Path('/etc/letsencrypt')
+HOOK_DIRECTORY = LE_ROOT / 'renewal-hooks/deploy'
+NGINX_BINARY = Path('/usr/sbin/nginx')
+SYSTEMCTL_BINARY = Path('/usr/bin/systemctl')
+LOCK_DIRECTORY = Path('/run')
+PATH_ERROR = 'HTTPS setup requires protected root-owned paths; edited files, links and writable ancestors are refused.'
+
+
+def _command(arguments, message, *, timeout=30):
+    try:
+        return run_command(arguments, stdin=subprocess.DEVNULL, timeout=timeout)
+    except (OperationError, OSError, subprocess.SubprocessError, UnicodeError):
+        raise OperationError(message) from None
+
+
+def _arguments(root, url, port):
+    root = Path(root)
+    if (not root.is_absolute() or root == Path('/') or '..' in root.parts
+            or any(ord(c) < 32 for c in str(root))):
+        raise OperationError('Use a normalized absolute, non-root installation path.')
+    invalid = OperationError('Host HTTPS requires a canonical lowercase HTTPS DNS origin on port 443.')
+    if not isinstance(url, str) or not re.fullmatch(r'https://[a-z0-9.-]+', url):
+        raise invalid
+    host = urlsplit(url).hostname
+    if (not host or len(host) > 253 or '.' not in host or not all(
+            re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in host.split('.'))):
+        raise invalid
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        raise invalid
+    if type(port) is not int or not 1024 <= port <= 65535:
+        raise OperationError('The loopback app port must be between 1024 and 65535.')
+    return root, host
+
+
+def _entry(path):
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise OperationError(PATH_ERROR) from None
+
+
+def _directories(path, *, create=False, private=False):
+    for directory in reversed((path, *path.parents)):
+        info = _entry(directory)
+        if info is None and create:
+            directory.mkdir(mode=0o700 if private and directory == path else 0o755)
+            info = directory.lstat()
+        if info is not None and (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022):
+            raise OperationError(PATH_ERROR)
+    info = _entry(path)
+    if private and info is not None and info.st_mode & 0o077:
+        raise OperationError(PATH_ERROR)
+
+
+def _file(path, *, private=False):
+    _directories(path.parent)
+    info = _entry(path)
+    if info is None:
+        return None
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1
+            or info.st_mode & (0o077 if private else 0o022) or info.st_size > 2 * 1024 * 1024):
+        raise OperationError(PATH_ERROR)
+    try:
+        return path.read_bytes()
+    except OSError:
+        raise OperationError(PATH_ERROR) from None
+
+
+def _digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def _write(path, data, mode):
+    _directories(path.parent)
+    _file(path)
+    descriptor, temporary = tempfile.mkstemp(prefix='.conspect-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as target:
+            os.fchmod(target.fileno(), mode)
+            target.write(data)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, path)
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+
+
+def _paths(root, host):
+    name = 'conspect-' + host
+    return {
+        'site': SITES_AVAILABLE / (name + '.conf'),
+        'enabled': SITES_ENABLED / (name + '.conf'),
+        'hook': HOOK_DIRECTORY / (name + '.sh'),
+        'backup': root / 'host/nginx.before-tls.conf',
+    }
+
+
+def _materials(root, host, port):
+    bootstrap = _file(root / 'deploy/nginx.bootstrap.conf')
+    final = _file(root / 'proxy/conspect.nginx.conf')
+    if bootstrap is None or final is None:
+        raise OperationError('Stage root/deploy/nginx.bootstrap.conf and root/proxy/conspect.nginx.conf before HTTPS setup.')
+    try:
+        bootstrap = bootstrap.decode('utf-8').replace('notes.example.com', host)
+        final_text = final.decode('utf-8')
+    except UnicodeError:
+        raise OperationError('The staged nginx templates must be UTF-8.') from None
+    # The final template is generated by bootstrap, not interpolated from arbitrary input here.
+    if (f'server_name {host};' not in final_text
+            or f'proxy_pass http://127.0.0.1:{port};' not in final_text
+            or f'ssl_certificate {LE_ROOT}/live/{host}/fullchain.pem;' not in final_text
+            or f'ssl_certificate_key {LE_ROOT}/live/{host}/privkey.pem;' not in final_text
+            or f'root {ACME_ROOT};' not in final_text):
+        raise OperationError('The staged TLS template does not match this origin, loopback port and certificate/webroot paths.')
+    bootstrap = bootstrap.replace('/var/lib/conspect-acme', str(ACME_ROOT)).encode()
+    lineage = shlex.quote(str(LE_ROOT / 'live' / host))
+    hook = (
+        '#!/bin/sh\nset -eu\n'
+        f'if [ "${{RENEWED_LINEAGE:-}}" = {lineage} ]; then\n'
+        f'    {shlex.quote(str(NGINX_BINARY))} -t >/dev/null 2>&1 && '
+        f'{shlex.quote(str(SYSTEMCTL_BINARY))} reload nginx >/dev/null 2>&1\n'
+        'fi\n'
+    ).encode()
+    return {'bootstrap': bootstrap, 'tls': final, 'hook': hook}
+
+
+def _expected(stage, backup, material):
+    return {
+        'site': None if stage == 'empty' else material[stage],
+        'hook': material['hook'] if stage == 'tls' else None,
+        'backup': material['bootstrap'] if backup else None,
+        'enabled': stage != 'empty',
+    }
+
+
+def _ownership(root, host, url, port, material=None):
+    state_path = root / 'host/https.json'
+    _directories(root / 'host', private=True)
+    raw = _file(state_path, private=True)
+    state = None
+    if raw is not None:
+        material = material or _materials(root, host, port)
+        try:
+            state = json.loads(raw)
+            if (not isinstance(state, dict)
+                    or set(state) != {'version', 'url', 'port', 'hashes', 'stage', 'backup', 'pending', 'new_nginx', 'new_certbot'}
+                    or type(state.get('version')) is not int or state['version'] != 1 or state.get('url') != url
+                    or type(state.get('port')) is not int or state['port'] != port
+                    or state.get('hashes') != {k: _digest(v) for k, v in material.items()}
+                    or state.get('stage') not in ('empty', 'bootstrap', 'tls')
+                    or type(state.get('backup')) is not bool or type(state.get('new_nginx')) is not bool
+                    or type(state.get('new_certbot')) is not bool):
+                raise ValueError
+            pending = state.get('pending')
+            if pending is not None and (
+                    not isinstance(pending, dict) or set(pending) != {'stage', 'backup'}
+                    or pending.get('stage') not in ('bootstrap', 'tls')
+                    or type(pending.get('backup')) is not bool
+                    or state['stage'] == 'tls' or pending['stage'] == state['stage']
+                    or (state['stage'] == 'bootstrap' and pending['stage'] != 'tls')):
+                raise ValueError
+            if (state['backup'] and state['stage'] != 'tls'
+                    or pending and pending['backup'] != (state['stage'] == 'bootstrap')):
+                raise ValueError
+        except (ValueError, TypeError, KeyError):
+            raise OperationError('Invalid or mismatching private HTTPS state; refusing to adopt existing files.') from None
+    choices = [_expected(state['stage'], state['backup'], material)] if state else [
+        {'site': None, 'hook': None, 'backup': None, 'enabled': False}]
+    if state and state['pending']:
+        choices.append(_expected(state['pending']['stage'], state['pending']['backup'], material))
+    paths = _paths(root, host)
+    for name, path in paths.items():
+        _directories(path.parent)
+        if name == 'enabled':
+            info = _entry(path)
+            exists = info is not None
+            if exists and (not stat.S_ISLNK(info.st_mode) or info.st_uid != 0
+                           or os.readlink(path) != str(paths['site'])):
+                raise OperationError(PATH_ERROR)
+            valid = any(choice[name] == exists for choice in choices)
+        else:
+            data = _file(path, private=name in ('backup', 'hook'))
+            valid = any(choice[name] == data for choice in choices)
+            if name == 'hook' and data is not None and path.lstat().st_mode & 0o700 != 0o700:
+                valid = False
+        if not valid:
+            raise OperationError('Unowned, missing or edited HTTPS destination; refusing to overwrite or adopt it.')
+    return state
+
+
+def _listeners():
+    for program in ('caddy', 'apache2', 'httpd'):
+        if shutil.which(program):
+            raise OperationError('Existing Caddy/Apache detected; use manual independent proxy integration instead.')
+    processes = _command(['ps', '-eo', 'comm='], 'Cannot inspect existing proxy processes safely.')
+    if any(line.strip().lower() in ('caddy', 'apache2', 'httpd') for line in processes.splitlines()):
+        raise OperationError('Existing Caddy/Apache detected; no proxy processes will be changed.')
+    units = _command(
+        ['systemctl', 'list-units', '--all', '--no-legend', '--plain', '--no-pager',
+         'caddy.service', 'apache2.service', 'httpd.service'],
+        'Cannot inspect existing proxy services safely.',
+    )
+    if units.strip():
+        raise OperationError('Existing Caddy/Apache service detected; no proxy services will be changed.')
+    for protocol in ('-ltnp', '-lunp'):
+        output = _command(['ss', '-H', protocol], 'Cannot inspect port owners; install iproute2 manually and retry.')
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) < 5:
+                raise OperationError('Cannot identify listening port owners safely.')
+            if fields[3].rsplit(':', 1)[-1] not in ('80', '443'):
+                continue
+            owners = re.findall(r'\("([^"\n]+)",pid=(\d+),fd=\d+\)', line)
+            if not owners or protocol == '-lunp':
+                raise OperationError('Port 80/443 has an unknown/conflicting owner; no host changes were made.')
+            for name, pid in owners:
+                try:
+                    nginx = shutil.which('nginx')
+                    valid = name == 'nginx' and nginx and Path(f'/proc/{pid}/exe').resolve(strict=True) == Path(nginx).resolve(strict=True)
+                except OSError:
+                    valid = False
+                if not valid:
+                    raise OperationError('Port 80/443 is not owned exclusively by nginx; no host changes were made.')
+
+
+def _layout(host, owned):
+    output = _command(['nginx', '-T'], 'Existing nginx configuration is invalid; repair it manually before HTTPS setup.')
+    active = '\n'.join(line.split('#', 1)[0] for line in output.splitlines())
+    if not re.search(r'\binclude\s+' + re.escape(str(SITES_ENABLED)) + r'/\*\s*;', active):
+        raise OperationError('nginx must already include the standard sites-enabled/* layout; global config will not be changed.')
+    sections = re.split(r'(?m)^# configuration file (.+):\s*$', output)
+    own_paths = _paths(Path('/unused'), host)
+    for index in range(0, len(sections), 2):
+        source = sections[index - 1] if index else None
+        if owned and source in (str(own_paths['site']), str(own_paths['enabled'])):
+            continue
+        text = '\n'.join(line.split('#', 1)[0] for line in sections[index].splitlines())
+        for names in re.findall(r'\bserver_name\s+([^;]+);', text):
+            try:
+                tokens = shlex.split(names)
+            except ValueError:
+                raise OperationError('Cannot safely inspect nginx server names; use manual proxy integration.') from None
+            for name in tokens:
+                if name.lower() == host or '*' in name or '$' in name or name.startswith(('~', '.')):
+                    raise OperationError('An existing nginx site may claim this hostname; refusing automatic integration.')
+
+
+def _timer():
+    output = _command(['systemctl', 'is-enabled', 'certbot.timer'],
+                      'Enable certbot.timer manually before retrying; existing renewal timers are never changed.')
+    if output.strip() != 'enabled':
+        raise OperationError('certbot.timer must be persistently enabled; existing renewal timers are never changed.')
+
+
+def inspect_host(root, url, port):
+    """Read-only conflict/path preflight; missing nginx/certbot are reported, not installed.
+
+    May run before root has been staged. Returns {missing_dependencies: [...]}.
+    A retained HTTPS state requires its original staged templates and exact owned files.
+    """
+    root, host = _arguments(root, url, port)
+    if platform.system() != 'Linux' or getattr(os, 'geteuid', lambda: -1)() != 0:
+        raise OperationError('Host HTTPS setup requires root on Linux.')
+    _directories(root)
+    state = _ownership(root, host, url, port)
+    _directories(ACME_ROOT / '.well-known/acme-challenge')
+    _directories(LE_ROOT / 'live' / host)
+    _directories(LE_ROOT / 'archive' / host)
+    _directories(LOCK_DIRECTORY)
+    _certificates(host)
+    _listeners()
+    missing = [name for name in ('nginx', 'certbot') if not shutil.which(name)]
+    if 'nginx' not in missing:
+        _layout(host, bool(state))
+        active = _command(['systemctl', 'show', '--property=ActiveState', '--value', 'nginx'],
+                          'Cannot inspect nginx service state.').strip()
+        if active != 'active' and not (state and state['new_nginx'] and active == 'inactive'):
+            raise OperationError('Existing nginx is not active; start/repair it manually before HTTPS setup.')
+    if 'certbot' not in missing and not (state and state['new_certbot']):
+        _timer()
+    return {'missing_dependencies': missing}
+
+
+def _certificates(host):
+    live = LE_ROOT / 'live' / host
+    archive = LE_ROOT / 'archive' / host
+    _directories(live)
+    _directories(archive)
+    entries = [_entry(live / (name + '.pem')) for name in ('fullchain', 'privkey')]
+    if all(info is None for info in entries):
+        return False
+    serials = []
+    for name, info in zip(('fullchain', 'privkey'), entries):
+        path = live / (name + '.pem')
+        if info is None or not stat.S_ISLNK(info.st_mode) or info.st_uid != 0:
+            raise OperationError('Certificate lineage must use root-owned certbot live/archive symlinks.')
+        target = os.readlink(path)
+        match = re.fullmatch(r'../../archive/' + re.escape(host) + '/' + name + r'([1-9][0-9]*)\.pem', target)
+        if not match:
+            raise OperationError('Certificate symlink leaves the expected certbot lineage.')
+        data = _file(archive / (name + match[1] + '.pem'), private=name == 'privkey')
+        if not data:
+            raise OperationError('Certificate archive files are missing or unsafe; inspect the lineage locally.')
+        serials.append(match[1])
+    if serials[0] != serials[1]:
+        raise OperationError('Certificate and key must belong to the same certbot archive generation.')
+    return True
+
+
+def _save(root, state):
+    _write(root / 'host/https.json', (json.dumps(state, sort_keys=True) + '\n').encode(), 0o600)
+
+
+def _apply(paths, expected):
+    # Remove the include first on rollback; install it last on forward progress.
+    if not expected['enabled'] and _entry(paths['enabled']) is not None:
+        paths['enabled'].unlink()
+    for name in ('backup', 'site', 'hook'):
+        path, data = paths[name], expected[name]
+        if data is None:
+            if _entry(path) is not None:
+                path.unlink()
+        elif _file(path, private=name != 'site') != data:
+            _directories(path.parent, create=True)
+            _write(path, data, 0o644 if name == 'site' else 0o700 if name == 'hook' else 0o600)
+    if expected['enabled'] and _entry(paths['enabled']) is None:
+        _directories(paths['enabled'].parent, create=True)
+        paths['enabled'].symlink_to(paths['site'])
+
+
+def _activate(state):
+    active = _command(['systemctl', 'show', '--property=ActiveState', '--value', 'nginx'],
+                      'Cannot inspect nginx service state.').strip()
+    if active == 'active':
+        _command(['systemctl', 'reload', 'nginx'], 'nginx graceful reload failed; inspect the service locally.')
+    elif state['new_nginx'] and active == 'inactive':
+        _command(['systemctl', 'enable', '--now', 'nginx'], 'New nginx could not be enabled/started; inspect it locally.')
+    else:
+        raise OperationError('Existing nginx is not active; start/repair it manually. It will never be restarted automatically.')
+
+
+def _transition(root, host, url, port, state, material, stage):
+    if state['pending'] is None:
+        state['pending'] = {'stage': stage, 'backup': state['stage'] == 'bootstrap'}
+        _save(root, state)
+    pending = state['pending']
+    if pending['stage'] == 'tls' and not _certificates(host):
+        raise OperationError('TLS transition requires a safe certificate lineage; retry issuance/repair locally.')
+    _ownership(root, host, url, port, material)
+    paths = _paths(root, host)
+    _apply(paths, _expected(pending['stage'], pending['backup'], material))
+    try:
+        _command(['nginx', '-t'], 'nginx rejected the isolated site; its previous configuration has been restored.')
+    except OperationError:
+        _apply(paths, _expected(state['stage'], state['backup'], material))
+        state['pending'] = None
+        _save(root, state)
+        raise
+    # A reload failure or interruption retains the journal, permitting a validated retry.
+    _activate(state)
+    state.update(stage=pending['stage'], backup=pending['backup'], pending=None, new_nginx=False)
+    _save(root, state)
+
+
+
+def _public_probe(host):
+    directory = ACME_ROOT / '.well-known/acme-challenge'
+    _directories(directory, create=True)
+    nonce = secrets.token_hex(24)
+    path = directory / ('conspect-' + secrets.token_hex(16))
+    connection = None
+    created = False
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        created = True
+        with os.fdopen(descriptor, 'wb') as target:
+            os.fchmod(target.fileno(), 0o644)
+            target.write(nonce.encode())
+        connection = http.client.HTTPConnection(host, 80, timeout=15)
+        connection.request('GET', '/.well-known/acme-challenge/' + path.name, headers={'Connection': 'close'})
+        response = connection.getresponse()
+        if response.status != 200 or response.read(len(nonce) + 1) != nonce.encode():
+            raise ValueError
+    except (OSError, http.client.HTTPException, ValueError):
+        raise OperationError(
+            'Public HTTP ACME probe failed. Point public DNS at this host and allow inbound port 80 in '
+            'the cloud/host firewall, then retry. No certificate was requested; the app remains running.'
+        ) from None
+    finally:
+        if connection is not None:
+            connection.close()
+        if created:
+            path.unlink()
+
+
+def _check_install_platform():
+    try:
+        release = platform.freedesktop_os_release()
+    except OSError:
+        raise OperationError('Cannot identify the host distribution for package installation.') from None
+    if (release.get('ID') != 'ubuntu' or release.get('VERSION_ID') != '24.04'
+            or platform.machine().lower() not in ('amd64', 'x86_64')):
+        raise OperationError('Automatic nginx/certbot installation supports only Ubuntu 24.04 amd64.')
+
+
+def _install(packages):
+    env = ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=l', 'apt-get']
+    _command(env + ['update'], 'apt update failed; inspect package sources/networking locally.', timeout=300)
+    _command(env + ['install', '--yes', '--no-remove', '--no-upgrade', '--no-install-recommends', *packages],
+             'nginx/certbot installation failed; inspect apt locally before retrying.', timeout=900)
+    if any(not shutil.which(name) for name in packages):
+        raise OperationError('Package installation did not provide nginx/certbot; inspect apt/PATH locally.')
+
+
+def configure_https(root, url, port, *, install_dependencies=False, agree_tos=False, email=None) -> None:
+    """Install only an owned independent site, probe ACME, issue TLS and gracefully reload.
+
+    Explicit ToS consent is required even when resuming. Never changes global nginx,
+    existing timers, Docker, DNS, firewalls, or unrelated services. Callers must keep
+    the installation's root-owned templates immutable across retries.
+    """
+    if agree_tos is not True:
+        raise OperationError('Explicit agree_tos=True is required before any HTTPS setup changes.')
+    if email is not None and (not isinstance(email, str) or len(email) > 254
+                              or not re.fullmatch(r'[A-Za-z0-9.!#$%&\x27*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}', email)
+                              or email.startswith('-')):
+        raise OperationError('Use a valid single ACME email address, or omit email.')
+    root, host = _arguments(root, url, port)
+    report = inspect_host(root, url, port)
+    material = _materials(root, host, port)
+    state = _ownership(root, host, url, port, material)
+    missing = report['missing_dependencies']
+    if missing and not install_dependencies:
+        raise OperationError('Missing dependencies: ' + ', '.join(missing) + '; install manually or opt in to installation.')
+    if missing:
+        _check_install_platform()
+    # Reject unsafe existing certificate files before even installing packages.
+    _certificates(host)
+    # A shared directory-inode lock serializes different installation roots too,
+    # without creating a global lock file or changing nginx configuration.
+    descriptor = os.open(LOCK_DIRECTORY, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise OperationError('Another host HTTPS setup is running.') from None
+        # Recheck ownership after taking the lock, before the first write/package call.
+        state = _ownership(root, host, url, port, material)
+        _directories(root / 'host', create=True, private=True)
+        if state is None:
+            state = {'version': 1, 'url': url, 'port': port, 'hashes': {k: _digest(v) for k, v in material.items()},
+                     'stage': 'empty', 'backup': False, 'pending': None,
+                     'new_nginx': 'nginx' in missing, 'new_certbot': 'certbot' in missing}
+            _save(root, state)
+        if missing:
+            _listeners()
+            _install(missing)
+            _layout(host, bool(state['stage'] != 'empty' or state['pending']))
+        if state['new_certbot']:
+            if install_dependencies:
+                _command(['systemctl', 'enable', '--now', 'certbot.timer'],
+                         'New certbot.timer could not be enabled; inspect it locally.')
+            _timer()
+            state['new_certbot'] = False
+            _save(root, state)
+        else:
+            _timer()
+        if state['pending']:
+            _transition(root, host, url, port, state, material, state['pending']['stage'])
+        if not _certificates(host):
+            if state['stage'] == 'tls':
+                raise OperationError('An active TLS lineage is missing; repair it manually without replacing the live site.')
+            if state['stage'] == 'empty':
+                _transition(root, host, url, port, state, material, 'bootstrap')
+            else:
+                _command(['nginx', '-t'], 'nginx configuration validation failed; no reload was attempted.')
+                _activate(state)
+            _public_probe(host)
+            arguments = ['certbot', 'certonly', '--non-interactive', '--webroot', '--webroot-path', str(ACME_ROOT),
+                         '--cert-name', host, '--domains', host, '--agree-tos']
+            arguments += ['--email', email] if email is not None else ['--register-unsafely-without-email']
+            _command(arguments, 'ACME issuance failed; check DNS, port 80 and CA limits locally, then retry.', timeout=300)
+            if not _certificates(host):
+                raise OperationError('certbot did not provide a safe certificate lineage; TLS was not enabled.')
+        if state['stage'] != 'tls':
+            _transition(root, host, url, port, state, material, 'tls')
+        else:
+            _command(['nginx', '-t'], 'nginx configuration validation failed; no reload was attempted.')
+        _timer()
+    except (OSError, UnicodeError):
+        raise OperationError('Host HTTPS setup could not safely access protected files; inspect paths/permissions locally.') from None
+    finally:
+        os.close(descriptor)

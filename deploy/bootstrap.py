@@ -2,8 +2,8 @@
 """First installation on a Linux amd64 server; normal updates belong to Actions.
 
 plan is offline/read-only. install requires --yes, creates a private installation
-once, and can resume only that same installation. Host proxies, DNS, firewall,
-existing Docker engines and existing Conspect deployments are never rewritten.
+once, and can resume only that same installation. Host HTTPS/firewall setup needs
+separate explicit flags; shared proxies, DNS and existing Docker engines are preserved.
 Run --help, then plan with the approved image/source before running install.
 """
 
@@ -28,6 +28,8 @@ from urllib.parse import urlencode, urlsplit
 
 import operations
 from backup import create_backup
+from firewall import inspect_firewall, open_web_ports
+from host_setup import configure_https, inspect_host
 from check_mcp import check_mcp
 from operations import Compose, OperationError, operation_lock, run_command, validate_bundle
 from prerequisites import check_local_docker, ensure_prerequisites
@@ -92,6 +94,9 @@ def validate_options(args):
     args.root = absolute_path(args.root)
     if args.command == 'verify':
         return
+    if args.command == 'setup-host':
+        validate_host_options(args, enabled=True)
+        return
     args.source = absolute_path(args.source)
     if args.source == args.root or args.source in args.root.parents or args.root in args.source.parents:
         raise OperationError('Stage source separately from the installation; neither path may contain the other.')
@@ -109,6 +114,40 @@ def validate_options(args):
             pass
         else:
             raise OperationError('For HTTPS directly by IP, use external mode with an already trusted IP certificate.')
+    validate_host_options(args)
+
+
+def validate_host_options(args, *, enabled=None):
+    enabled = getattr(args, 'setup_https', False) if enabled is None else enabled
+    if enabled:
+        if args.command != 'setup-host' and args.proxy != 'nginx':
+            raise OperationError('Automatic HTTPS supports only --proxy nginx; existing Caddy/external proxies remain operator-managed.')
+        if not getattr(args, 'agree_acme_tos', False):
+            raise OperationError('Automatic HTTPS requires explicit --agree-acme-tos before any changes.')
+        email = getattr(args, 'acme_email', None)
+        if email is not None and (len(email) > 254 or not re.fullmatch(
+                r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}", email)
+                or email.startswith('-')):
+            raise OperationError('Use a valid single ACME email address, or omit --acme-email.')
+    elif (getattr(args, 'open_web_ports', False) or getattr(args, 'acme_email', None)
+          or getattr(args, 'agree_acme_tos', False)):
+        raise OperationError('Host firewall/ACME options require --setup-https; they never apply implicitly.')
+
+
+def host_preflight(args, root, url, port):
+    if getattr(args, 'setup_https', False) or args.command == 'setup-host':
+        inspect_host(root, url, port)
+        if getattr(args, 'open_web_ports', False):
+            inspect_firewall(root)
+
+
+def configure_host(args, root, url, port):
+    if getattr(args, 'setup_https', False) or args.command == 'setup-host':
+        # Configure only after the first verified data/config snapshot is retained.
+        if getattr(args, 'open_web_ports', False):
+            open_web_ports(root)
+        configure_https(root, url, port, install_dependencies=args.install_deps,
+                        agree_tos=args.agree_acme_tos, email=args.acme_email)
 
 
 def private_file(path):
@@ -419,7 +458,7 @@ def finish_public(root, state, url):
             save_state(root, state, 'local-ready')
         print('LOCAL_READY: app/db are healthy, but public HTTPS/MCP acceptance has not passed.')
         print('Review the generated proxy fragment, connect the full HTTPS origin, then run verify.')
-        print('No host proxy, DNS or firewall was modified; containers remain available on loopback.')
+        print('Containers remain available on loopback. Review any explicitly requested host setup and provider firewall rules.')
         return 2
     if state:
         save_state(root, state, 'healthy')
@@ -440,6 +479,9 @@ def install(args):
     with bootstrap_lock(args.root):
         state = inspect_target(args, files)
         check_resources(args.root)
+        if getattr(args, 'setup_https', False):
+            # Proxy conflicts must fail before installing Docker or changing host packages.
+            inspect_host(args.root, args.url, args.port)
         if state is None:
             free_port(args.port)
         # Inspect an existing daemon before allowing system-wide plugin changes.
@@ -460,6 +502,7 @@ def install(args):
                 # Recheck manifest while serialized with releases and backups.
                 state = inspect_target(args, files)
                 owned_resources(args.root, state)
+                host_preflight(args, args.root, args.url, args.port)
                 command = compose_command(args.root)
                 # Validate interpolation before network pulls or container creation.
                 run_command(command + ['config', '--quiet'], timeout=30)
@@ -483,6 +526,7 @@ def install(args):
                     save_state(args.root, state, 'local-ready')
                 else:
                     verified_backup(args.root, state)
+                configure_host(args, args.root, url, args.port)
                 print('Private owner credentials: ' + str(args.root / 'owner-login.txt'))
                 print('Proxy fragment directory: ' + str(args.root / 'proxy'))
                 print('Initial verified backup is LOCAL ONLY; configure an encrypted offsite copy separately.')
@@ -512,6 +556,37 @@ def verify(args):
         operations.ROOT = previous_root
 
 
+def setup_host(args):
+    if not args.yes:
+        raise OperationError('Host setup requires --yes and --agree-acme-tos; no host changes were made.')
+    if sys.platform != 'linux' or os.geteuid() != 0:
+        raise OperationError('Run setup-host as root on the target Linux server.')
+    clear_overrides()
+    trusted_directory(args.root)
+    private_file(args.root / '.env')
+    ensure_prerequisites()
+    with bootstrap_lock(args.root):
+        previous_root = operations.ROOT
+        operations.ROOT = args.root
+        try:
+            with operation_lock():
+                state = read_state(args.root)
+                if state['inputs'].get('proxy') != 'nginx':
+                    raise OperationError('Host setup requires a bootstrap-managed nginx installation; shared Caddy is never adopted.')
+                owned_resources(args.root, state)
+                verified_backup(args.root, state)
+                compose = Compose(nginx=True)
+                url = check_local(compose, args.root)
+                if url != state['inputs']['url']:
+                    raise OperationError('Installed origin changed; review host migration separately before automatic setup.')
+                port = state['inputs']['port']
+                host_preflight(args, args.root, url, port)
+                configure_host(args, args.root, url, port)
+                return finish_public(args.root, state, url)
+        finally:
+            operations.ROOT = previous_root
+
+
 def plan(args):
     files = source_files(args, trusted=False)
     print('PLAN ONLY: no commands, downloads, credentials or installation files are created.')
@@ -523,7 +598,12 @@ def plan(args):
     print('Docker client on PATH: ' + ('yes; daemon/capabilities checked during install' if shutil.which('docker') else 'missing'))
     print('Install will check linux/amd64, local Docker, Compose start/up --wait, RAM, disk and loopback port.')
     print('Install will generate credentials ONCE, start only app/db and take a consistent local backup.')
-    print('Proxy mode: ' + args.proxy + '; only a reviewable fragment is generated, no host service changes.')
+    if args.setup_https:
+        print('Opt-in host setup: isolated nginx site, ACME HTTP probe, certificate and scoped renewal hook.')
+        print('Open only TCP 80/443: ' + ('explicitly authorized' if args.open_web_ports else 'not authorized'))
+        print('Shared Caddy/unknown listeners and unowned site files are refused; DNS/provider rules remain external.')
+    else:
+        print('Proxy mode: ' + args.proxy + '; only a reviewable fragment is generated, no host service changes.')
     print('Exit 0 requires public HTTPS/MCP acceptance; exit 2 means LOCAL_READY, not a working public site.')
     return 0
 
@@ -531,24 +611,30 @@ def plan(args):
 def main(argv=None):
     parser = SafeParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True, parser_class=SafeParser)
-    for name in ('plan', 'install', 'verify'):
+    for name in ('plan', 'install', 'verify', 'setup-host'):
         command = commands.add_parser(name)
         command.add_argument('--root', default=str(DEFAULT_ROOT))
-        if name != 'verify':
+        if name in ('plan', 'install'):
             command.add_argument('--source', default=str(SOURCE))
             command.add_argument('--url', required=True)
             command.add_argument('--image', required=True, help='Approved immutable GHCR digest, never latest/a mutable tag')
             command.add_argument('--revision', required=True, help='Full Git SHA matching the approved source/image')
             command.add_argument('--proxy', choices=('caddy', 'nginx', 'external'), required=True)
             command.add_argument('--port', type=int, default=8096)
-        if name == 'install':
+        if name in ('plan', 'install', 'setup-host'):
+            if name != 'setup-host':
+                command.add_argument('--setup-https', action='store_true', help='Opt in to isolated nginx and ACME setup; never changes Caddy')
+            command.add_argument('--open-web-ports', action='store_true', help='Opt in to narrow, supported host firewall changes for TCP 80/443')
+            command.add_argument('--agree-acme-tos', action='store_true', help='Explicit consent to ACME terms for automated certificate issuance')
+            command.add_argument('--acme-email', help='Optional ACME account contact; no email is registered if omitted')
+        if name in ('install', 'setup-host'):
             command.add_argument('--yes', action='store_true')
             command.add_argument('--install-deps', action='store_true', help='Opt in to prerequisite installation on Ubuntu 24.04 amd64')
     try:
         args = parser.parse_args(argv)
         validate_options(args)
         os.umask(0o077)
-        return {'plan': plan, 'install': install, 'verify': verify}[args.command](args)
+        return {'plan': plan, 'install': install, 'verify': verify, 'setup-host': setup_host}[args.command](args)
     except OperationError as error:
         print('Bootstrap refused/failed: ' + str(error), file=sys.stderr)
     except (OSError, ValueError, KeyError, TypeError, UnicodeError):
