@@ -235,39 +235,21 @@ const pageTemplates = `
 {{define "manage"}}{{template "head" .}}
 <body>
 {{template "header" .}}
-<main class="shell" id="main">
-  <p class="breadcrumbs"><a href="/projects">Все проекты</a> / <a href="/projects/{{.Project.ID}}">Оглавление проекта</a></p>
-  <div class="page-heading">
+<main class="shell settings-shell" id="main">
+  <p class="breadcrumbs"><a href="/projects/{{.Project.ID}}">← К проекту</a></p>
+  <div class="page-heading settings-heading">
+    <p class="page-kicker">Управление проектом</p>
     <h1>{{.Project.Name}}</h1>
-
   </div>
   {{template "notices" .}}
-  <div class="form-grid">
-    <details class="panel disclosure">
-      <summary id="edit-project-title">Сведения о проекте</summary>
-      <form class="stack" method="post" action="/projects/{{.Project.ID}}/edit">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <div>
-          <label for="edit-project-name">Название</label>
-          <input id="edit-project-name" name="name" type="text" value="{{.Project.Name}}" maxlength="300" required>
-        </div>
-        <div>
-          <label for="edit-project-description">Описание <span class="optional">(необязательно)</span></label>
-          <textarea id="edit-project-description" name="description" rows="3">{{.Project.Description}}</textarea>
-        </div>
-        <div><button type="submit">Сохранить проект</button></div>
-      </form>
-    </details>
-
-  </div>
-  <section class="section" aria-labelledby="manage-notes-title">
+  <section aria-labelledby="manage-notes-title">
     <div class="section-heading"><h2 id="manage-notes-title">Конспекты</h2><span class="library-total">Всего: {{len .Notes}}</span></div>
     <ul class="note-list managed-notes">
       {{range .Notes}}
       <li class="managed-note">
         <div class="managed-note-main">
           <a class="item-title" href="/notes/{{.ID}}">{{.Title}}</a>
-          <p class="item-meta">{{if .Shared}}Доступен по ссылке{{else}}Только для вас{{end}} · <time>{{date .UpdatedAt}} UTC</time></p>
+          <p class="item-meta">{{if .Shared}}Доступен по ссылке{{else}}Только для вас{{end}}</p>
         </div>
         <a class="note-settings-link" href="/notes/{{.ID}}/manage" aria-label="Настроить конспект «{{.Title}}»">Настроить</a>
       </li>
@@ -276,7 +258,22 @@ const pageTemplates = `
       {{end}}
     </ul>
   </section>
-  <details class="panel disclosure danger-zone section">
+  <details class="settings-divider disclosure section">
+    <summary id="edit-project-title">Название и описание</summary>
+    <form class="stack settings-form" method="post" action="/projects/{{.Project.ID}}/edit">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <div>
+        <label for="edit-project-name">Название</label>
+        <input id="edit-project-name" name="name" type="text" value="{{.Project.Name}}" maxlength="300" required>
+      </div>
+      <div>
+        <label for="edit-project-description">Описание <span class="optional">(необязательно)</span></label>
+        <textarea id="edit-project-description" name="description" rows="3">{{.Project.Description}}</textarea>
+      </div>
+      <div><button type="submit">Сохранить проект</button></div>
+    </form>
+  </details>
+  <details class="settings-divider disclosure">
     <summary id="delete-project-title">Удалить проект</summary>
     <p>Будет удалён проект, все его конспекты ({{len .Notes}}) и их вложения. Отменить это действие нельзя.</p>
     <form class="stack" method="post" action="/projects/{{.Project.ID}}/delete">
@@ -292,26 +289,27 @@ const pageTemplates = `
 {{define "manage-note"}}{{template "head" .}}
 <body>
 {{template "header" .}}
-<main class="shell" id="main">
-  <p class="breadcrumbs"><a href="/projects/{{.Project.ID}}/manage">{{.Project.Name}} · Управление проектом</a></p>
-  <div class="page-heading"><h1>{{.Note.Title}}</h1></div>
+<main class="shell settings-shell" id="main">
+  <p class="breadcrumbs"><a href="/projects/{{.Project.ID}}/manage">← {{.Project.Name}}</a></p>
+  <div class="page-heading settings-heading">
+    <p class="page-kicker">Настройки конспекта</p>
+    <h1>{{.Note.Title}}</h1>
+    <a class="text-action" href="/notes/{{.Note.ID}}">Открыть читалку →</a>
+  </div>
   {{template "notices" .}}
     {{range .Entries}}
     {{$note := .Note}}
-    <article class="panel note-management" aria-labelledby="note-{{$note.ID}}-title">
-      <div class="note-heading">
-        <h2 id="note-{{$note.ID}}-title">Сведения и файлы</h2>
-        <p class="item-meta">Версия {{$note.Version}} · Изменён <time>{{date $note.UpdatedAt}} UTC</time></p>
-                {{if $note.Shared}}<p class="notice">Доступен по ссылке. Замена файла и правки через MCP сразу станут видны читателям.</p>{{else}}<p class="muted">Публичный доступ закрыт.</p>{{end}}
-                {{if .Warnings}}<div class="notice notice-error" role="status"><strong>Не все изображения доступны:</strong><ul>{{range .Warnings}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
-        <nav class="actions" aria-label="Страницы конспекта">
-          <a href="/notes/{{$note.ID}}">Читать конспект</a>
-          <a href="/notes/{{$note.ID}}/share">Доступ по ссылке</a>
-        </nav>
+    <div class="note-management">
+      <div class="settings-access">
+        <div>
+          <strong>{{if $note.Shared}}Доступен по ссылке{{else}}Только для вас{{end}}</strong>
+          {{if $note.Shared}}<p class="hint">Замена файла и правки через MCP сразу станут видны читателям.</p>{{end}}
+        </div>
+        <a class="text-action" href="/notes/{{$note.ID}}/share">Доступ по ссылке →</a>
       </div>
-      <div class="form-grid">
-        <section aria-labelledby="metadata-{{$note.ID}}">
-          <h4 id="metadata-{{$note.ID}}">Название и расположение</h4>
+      {{if .Warnings}}<div class="notice notice-error" role="status"><strong>Не все изображения доступны:</strong><ul>{{range .Warnings}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
+      <section class="settings-row" aria-labelledby="metadata-{{$note.ID}}">
+          <h2 id="metadata-{{$note.ID}}">Название и проект</h2>
           <form class="stack" method="post" action="/notes/{{$note.ID}}/metadata">
             <input type="hidden" name="csrf" value="{{$.CSRF}}">
             <input type="hidden" name="version" value="{{$note.Version}}">
@@ -327,22 +325,24 @@ const pageTemplates = `
             </div>
             <div><button type="submit">Сохранить сведения</button></div>
           </form>
-        </section>
-        <section aria-labelledby="replace-{{$note.ID}}">
-          <h4 id="replace-{{$note.ID}}">Заменить Markdown</h4>
-          <p class="muted" id="replace-hint-{{$note.ID}}">Адрес, вложения и ссылка доступа сохраняются.</p>
+      </section>
+      <section class="settings-row" aria-labelledby="replace-{{$note.ID}}">
+        <div>
+          <h2 id="replace-{{$note.ID}}">Исходный Markdown</h2>
+          <p class="item-meta">Версия {{$note.Version}} · {{template "library-date" $note.UpdatedAt}}</p>
+        </div>
           <form class="stack" method="post" action="/notes/{{$note.ID}}/replace" enctype="multipart/form-data">
             <input type="hidden" name="csrf" value="{{$.CSRF}}">
             <input type="hidden" name="version" value="{{$note.Version}}">
             <div>
               <label for="replace-file-{{$note.ID}}">Новый файл .md в UTF-8</label>
               <input id="replace-file-{{$note.ID}}" name="file" type="file" accept=".md,text/markdown" aria-describedby="replace-hint-{{$note.ID}}" required>
+              <p class="hint" id="replace-hint-{{$note.ID}}">Адрес, вложения и ссылка доступа сохраняются.</p>
             </div>
-            <div><button type="submit">Заменить файл</button></div>
+            <div><button class="button-quiet" type="submit">Заменить файл</button></div>
           </form>
-        </section>
-      </div>
-      <details class="subsection disclosure"{{if .Warnings}} open{{end}}>
+      </section>
+      <details class="settings-divider disclosure"{{if .Warnings}} open{{end}}>
         <summary id="images-{{$note.ID}}">Изображения · {{len .Attachments}}</summary>
         <p id="image-hint-{{$note.ID}}" class="muted">Загрузка не вставляет изображение в текст. Добавьте Markdown-фрагмент отдельно.</p>
         <form class="stack" method="post" action="/notes/{{$note.ID}}/attachments" enctype="multipart/form-data">
@@ -370,7 +370,7 @@ const pageTemplates = `
           {{end}}
         </ul>
       </details>
-      <details class="danger-zone subsection disclosure">
+      <details class="settings-divider disclosure">
         <summary id="delete-note-{{$note.ID}}">Удалить конспект</summary>
         <form class="stack" method="post" action="/notes/{{$note.ID}}/delete">
           <input type="hidden" name="csrf" value="{{$.CSRF}}">
@@ -379,7 +379,7 @@ const pageTemplates = `
           <div><button class="button-danger" type="submit">Удалить конспект</button></div>
         </form>
       </details>
-    </article>
+    </div>
     {{end}}
 </main>
 </body>
@@ -417,42 +417,38 @@ const pageTemplates = `
 <body>
 {{template "header" .}}
 <main class="shell narrow" id="main">
-  <p class="breadcrumbs"><a href="/projects/{{.Note.ProjectID}}/manage">Управление проектом</a></p>
-  <div class="page-heading">
+  <p class="breadcrumbs"><a href="/notes/{{.Note.ID}}/manage">← Настройки конспекта</a></p>
+  <div class="page-heading settings-heading">
     <h1>Доступ по ссылке</h1>
-    <p>{{.Note.Title}}</p>
-    <p><a href="/notes/{{.Note.ID}}">Читать конспект</a></p>
+    <a class="text-action" href="/notes/{{.Note.ID}}">{{.Note.Title}} →</a>
   </div>
   {{template "notices" .}}
-  <section class="panel" aria-labelledby="share-title">
-    <h2 id="share-title">Ссылка только для чтения</h2>
-    <p class="muted">Конспект и изображения доступны всем, у кого есть ссылка. Остальные материалы закрыты.</p>
+  <section class="settings-divider" aria-labelledby="share-title">
+    <h2 id="share-title">{{if .ShareActive}}Ссылка активна{{else}}Доступ отключён{{end}}</h2>
+    <p class="muted">По ссылке можно читать этот конспект и смотреть его изображения. Другие материалы останутся закрыты.</p>
     {{if .ShareActive}}
     {{if .ShareURL}}
     <label for="share-url">Текущая ссылка</label>
     <input id="share-url" class="mono" type="text" value="{{.ShareURL}}" readonly spellcheck="false" autocomplete="off">
 
     {{end}}
-    <div class="subsection">
-      <h3>Перевыпустить ссылку</h3>
-      <p class="muted">Старая ссылка сразу перестанет работать.</p>
-      <form method="post" action="/notes/{{.Note.ID}}/share">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="hidden" name="action" value="rotate">
-        <button type="submit">Перевыпустить ссылку</button>
-      </form>
-    </div>
-    <div class="danger-zone subsection">
-      <h3>Отключить доступ</h3>
-      <p>Ссылка перестанет работать. Конспект не удаляется.</p>
-      <form method="post" action="/notes/{{.Note.ID}}/share">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="hidden" name="action" value="revoke">
-        <button class="button-danger" type="submit">Отозвать ссылку</button>
-      </form>
-    </div>
+    <details class="settings-divider disclosure section">
+      <summary>Управление ссылкой</summary>
+      <p class="hint">При перевыпуске или отзыве старая ссылка сразу перестанет работать. Конспект не удаляется.</p>
+      <div class="actions">
+        <form method="post" action="/notes/{{.Note.ID}}/share">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="action" value="rotate">
+          <button class="button-quiet" type="submit">Перевыпустить ссылку</button>
+        </form>
+        <form method="post" action="/notes/{{.Note.ID}}/share">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="action" value="revoke">
+          <button class="button-danger" type="submit">Отозвать ссылку</button>
+        </form>
+      </div>
+    </details>
     {{else}}
-    <p class="empty-state">Доступ по ссылке отключён.</p>
     <form method="post" action="/notes/{{.Note.ID}}/share">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="action" value="create">
@@ -467,10 +463,10 @@ const pageTemplates = `
 {{define "keys"}}{{template "head" .}}
 <body>
 {{template "header" .}}
-<main class="shell" id="main">
-  <div class="page-heading">
+<main class="shell settings-shell" id="main">
+  <div class="page-heading settings-heading">
+    <p class="page-kicker">Настройки · Подключения</p>
     <h1>API-ключи</h1>
-
   </div>
   {{template "notices" .}}
   {{if .KeySecret}}
@@ -481,9 +477,9 @@ const pageTemplates = `
     <input id="key-secret" class="mono" type="text" value="{{.KeySecret}}" readonly spellcheck="false" autocomplete="off" aria-describedby="secret-hint">
   </section>
   {{end}}
-  <details class="panel section disclosure"{{if not .Keys}} open{{end}}>
+  <details class="settings-divider disclosure"{{if not .Keys}} open{{end}}>
     <summary id="issue-title">Выдать API-ключ</summary>
-    <form class="stack" method="post" action="/settings/api-keys">
+    <form class="stack key-form" method="post" action="/settings/api-keys">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <div>
         <label for="key-name">Название клиента</label>
@@ -535,7 +531,7 @@ const pageTemplates = `
       <h2 id="keys-title">Выданные ключи</h2>
       <div class="actions">
         <span class="library-total">Показано: {{len .Keys}}</span>
-        {{if .ShowRevoked}}<a href="/settings/api-keys">Скрыть отозванные</a>{{else}}<a href="/settings/api-keys?show_revoked=1">Показать отозванные</a>{{end}}
+        {{if .ShowRevoked}}<a class="text-action" href="/settings/api-keys">Скрыть отозванные</a>{{else}}<a class="text-action" href="/settings/api-keys?show_revoked=1">Показать отозванные</a>{{end}}
       </div>
     </div>
 
@@ -556,7 +552,7 @@ const pageTemplates = `
       </dl>
       {{if and (not .RevokedAt) (or (not .ExpiresAt) (.ExpiresAt.After now))}}
       {{$key := .}}
-      <form class="stack" method="post" action="/settings/api-keys/{{.ID}}/access">
+      <form class="stack key-form" method="post" action="/settings/api-keys/{{.ID}}/access">
         <input type="hidden" name="csrf" value="{{$.CSRF}}">
         <fieldset aria-describedby="key-{{.ID}}-access-hint">
           <legend>Изменить доступ к материалам</legend>
@@ -575,7 +571,7 @@ const pageTemplates = `
       </form>
       {{end}}
       {{if not .RevokedAt}}
-      <form method="post" action="/settings/api-keys/{{.ID}}/revoke">
+      <form class="key-revoke" method="post" action="/settings/api-keys/{{.ID}}/revoke">
         <input type="hidden" name="csrf" value="{{$.CSRF}}">
         <button class="button-danger" type="submit">Отозвать ключ</button>
       </form>
@@ -595,7 +591,12 @@ const pageTemplates = `
 <body>
 {{template "header" .}}
 <main class="shell narrow" id="main">
-  <div class="page-heading"><h1>Подключить ChatGPT</h1><p>{{.OAuthClientName}}</p><p class="item-meta">Клиент: <code>{{.OAuthClientID}}</code></p></div>
+  <div class="page-heading settings-heading">
+    <p class="page-kicker">Подключения</p>
+    <h1>Подключить ChatGPT</h1>
+    <p>{{.OAuthClientName}}</p>
+    <p class="item-meta">Клиент: <code>{{.OAuthClientID}}</code></p>
+  </div>
   {{template "notices" .}}
   <form class="stack" method="post" action="/oauth/authorize">
     <input type="hidden" name="csrf" value="{{.CSRF}}">

@@ -1,4 +1,11 @@
 /* Operate: ruled working surfaces. Read: a separate, serif reading column. */
+@font-face {
+  font-family: "Golos Text";
+  src: url(golos-text.woff2) format("woff2");
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+}
 :root {
   color-scheme: light;
   --canvas: #ffffff;
@@ -11,7 +18,7 @@
   --button-ink: #ffffff;
   --button-hover: #383838;
   --button-active: #000000;
-  --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --sans: "Golos Text", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   --text-small: .875rem;
   --text-body: 1rem;
@@ -169,15 +176,33 @@ main.shell { padding-block: 3rem 5rem; }
 .disclosure > summary:hover { text-decoration: underline; text-underline-offset: .2em; }
 .disclosure[open] > summary { margin-bottom: 1.25rem; }
 .disclosure > summary::marker { color: var(--muted); }
-.note-management { margin-top: 1.5rem; padding-block: 2rem; }
+.settings-shell { max-width: 52rem; }
+.settings-heading { margin-bottom: 2rem; }
+.settings-heading h1 { font-size: clamp(2rem, 5vw, 3rem); }
+.settings-heading .page-kicker { margin-bottom: .5rem; color: var(--muted); font-size: var(--text-small); font-weight: 500; }
+.settings-heading .text-action { margin-top: -.25rem; }
+.settings-divider, .settings-row { border-top: 1px solid var(--line); padding-block: 1.125rem; }
+.settings-divider > :last-child, .settings-row .hint { margin-bottom: 0; }
+.settings-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: .75rem 2rem; align-items: baseline; }
+.settings-row h2 { margin-bottom: .25rem; font-size: var(--text-body); }
+.settings-row > * { min-width: 0; }
+.settings-form, .note-management > details > form { max-width: 32rem; }
+.settings-access {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .25rem 1rem;
+  margin-bottom: 1.25rem; padding: .75rem 1rem; background: var(--surface);
+}
+.settings-access .hint { margin: .25rem 0 0; }
 .key-list { border-top: 1px solid var(--line); }
-.key-card { margin: 0; padding-block: .5rem; border-bottom: 1px solid var(--line); }
+.key-card { margin: 0; padding-block: .375rem; border-bottom: 1px solid var(--line); }
 .key-summary { display: inline-flex; align-items: baseline; justify-content: space-between; gap: .5rem 1rem; width: calc(100% - 1.5rem); vertical-align: top; }
 .key-name { min-width: 0; overflow-wrap: anywhere; }
-.key-summary .badge { flex: 0 0 auto; margin: 0; }
+.key-summary .badge { flex: 0 0 auto; margin: 0; border: 0; background: var(--surface); color: var(--muted); }
 .key-card-body { padding-block: .25rem 1rem; }
-.note-heading { margin-bottom: 2rem; }
-.note-heading .item-meta { margin-bottom: 1rem; }
+.key-form { padding: 1rem; background: var(--surface); }
+.key-form > div:has(> input:not([type="hidden"])) { max-width: 28rem; }
+.key-form .choice-list { background: var(--canvas); border-color: var(--line); }
+.key-form .hint { margin-bottom: .5rem; }
+.key-revoke { margin-top: 1rem; }
 .attachment-list { margin-top: 1.5rem; }
 .attachment { padding-block: 1.5rem; border-top: 1px solid var(--line); }
 .attachment .item-meta { margin-inline-start: .5rem; }
@@ -191,20 +216,15 @@ main.shell { padding-block: 3rem 5rem; }
 .danger-zone h2, .danger-zone h3, .danger-zone h4 { font-weight: 750; }
 .choice-list { max-height: 18rem; overflow-y: auto; overscroll-behavior: contain; padding: .5rem; border: 1px solid var(--control); }
 .choice-list p { margin: 0; }
-.secret-panel { padding: 1.5rem; border: 2px solid var(--ink); }
+.secret-panel { margin-bottom: 1.5rem; padding: 1.25rem; border: 1px solid var(--control); }
+.secret-panel h2 { margin-bottom: .5rem; }
 .badge { display: inline-block; margin-inline-start: .5rem; padding: .125rem .5rem; border: 1px solid var(--control); font-size: var(--text-small); font-weight: 400; vertical-align: middle; }
 .key-details { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: .5rem 1.5rem; margin-block: 1rem 1.5rem; font-size: var(--text-small); }
 .key-details dt { color: var(--muted); }
 .key-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
-/* The login pane remains dark in both OS schemes; controls use local tokens. */
-main.auth-layout { width: min(27rem, calc(100% - 4rem)); padding-block: 4rem; }
-.login-panel {
-  color-scheme: dark; --canvas: #191919; --surface: #292929; --ink: #ffffff;
-  --muted: #c4c4c4; --line: #737373; --control: #969696;
-  --button: #ffffff; --button-ink: #191919; --button-hover: #dddddd; --button-active: #c4c4c4;
-  min-width: 0; padding: 2.5rem; border: 0; background: var(--canvas); color: var(--ink);
-}
-.login-panel h1 { margin-bottom: 1.5rem; font-size: 1.5rem; letter-spacing: normal; }
+main.auth-layout { width: min(23rem, calc(100% - 4rem)); padding-block: clamp(2.5rem, 10vh, 6rem); }
+.login-panel { min-width: 0; }
+.login-panel h1 { margin-bottom: 1.75rem; font-size: clamp(2.25rem, 6vw, 3rem); }
 .login-panel .stack > button { width: 100%; margin-top: .5rem; }
 
 input:-webkit-autofill { -webkit-text-fill-color: var(--ink); -webkit-box-shadow: 0 0 0 1000px var(--canvas) inset; caret-color: var(--ink); }
@@ -264,12 +284,9 @@ input:-webkit-autofill { -webkit-text-fill-color: var(--ink); -webkit-box-shadow
     --button: #eeeeee; --button-ink: #141414; --button-hover: #d0d0d0; --button-active: #b5b5b5;
   }
 }
-@media (max-width: 68rem) {
-  main.auth-layout { padding-block: 3rem; }
-  .login-panel { padding: 2rem; }
-}
+
 @media (max-width: 52rem) {
-  .form-grid { grid-template-columns: minmax(0, 1fr); }
+  .form-grid, .settings-row { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 38rem) {
   :root { --text-title: 2rem; }
@@ -291,8 +308,8 @@ input:-webkit-autofill { -webkit-text-fill-color: var(--ink); -webkit-box-shadow
   .managed-note .item-meta { display: block; font-size: .8125rem; }
   .key-details { grid-template-columns: minmax(0, 1fr); gap: .25rem; }
   .key-details dd { margin-bottom: .75rem; }
-  .login-panel { padding: 1.5rem; }
-  main.auth-layout { width: calc(100% - 2rem); }
+  main.auth-layout { width: min(23rem, calc(100% - 2rem)); }
+  .settings-access, .key-form { padding-inline: .75rem; }
   .reader-shell { padding-block: 1.5rem 3rem; }
   .reader-nav, .reader-heading, .reader-document-title .markdown > h1:first-child { margin-bottom: 1.5rem; }
   .markdown pre { padding: .75rem; }
@@ -301,17 +318,17 @@ input:-webkit-autofill { -webkit-text-fill-color: var(--ink); -webkit-box-shadow
   *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
 }
 @media (forced-colors: active) {
-  :root, .login-panel { --canvas: Canvas; --surface: Canvas; --ink: CanvasText; --muted: CanvasText; --line: CanvasText; --control: ButtonText; --button: ButtonFace; --button-ink: ButtonText; --button-hover: ButtonFace; --button-active: ButtonFace; }
+  :root { --canvas: Canvas; --surface: Canvas; --ink: CanvasText; --muted: CanvasText; --line: CanvasText; --control: ButtonText; --button: ButtonFace; --button-ink: ButtonText; --button-hover: ButtonFace; --button-active: ButtonFace; }
   a { color: LinkText; }
   :focus-visible { outline-color: Highlight; }
-  button, input, select, textarea, .login-panel { border: 1px solid ButtonText; }
+  button, input, select, textarea { border: 1px solid ButtonText; }
   input[type="checkbox"], input[type="radio"] { accent-color: auto; }
   button:disabled, input:disabled, select:disabled, textarea:disabled, [aria-disabled="true"] { color: GrayText; border-color: GrayText; }
   .site-nav a[aria-current="page"] { border-color: Highlight; }
   ::selection { color: HighlightText; background: Highlight; }
 }
 @media print {
-  :root, .login-panel { color-scheme: light; --canvas: #ffffff; --surface: #ffffff; --ink: #000000; --muted: #383838; --line: #737373; --control: #737373; }
+  :root { color-scheme: light; --canvas: #ffffff; --surface: #ffffff; --ink: #000000; --muted: #383838; --line: #737373; --control: #737373; }
   @page { margin: 18mm; }
   .site-header, .skip-link, .reader-nav, .actions, form, .library-action { display: none; }
   .shell, .reader-shell { width: 100%; max-width: none; margin: 0; padding: 0; }

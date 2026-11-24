@@ -43,6 +43,8 @@ func TestStaticAssetsVersionedAndLegacy(t *testing.T) {
 		path, cache, contentType string
 	}{
 		{stylesheetURL(), immutableAssetCache, "text/css"},
+		{appFontURL, immutableAssetCache, "font/woff2"},
+		{"/assets/fonts/LICENSE-Golos-Text.txt", "public, no-cache", "text/plain"},
 		{readerAsset("reader.js"), immutableAssetCache, "text/javascript"},
 		{readerAsset("katex.min.css"), immutableAssetCache, "text/css"},
 		{readerAsset("fonts/KaTeX_Main-Regular.woff2"), immutableAssetCache, "font/woff2"},
@@ -62,6 +64,18 @@ func TestStaticAssetsVersionedAndLegacy(t *testing.T) {
 				t.Fatalf("missing validator/security headers: %v", r.Header())
 			}
 		})
+	}
+}
+
+func TestInterfaceFontIsSameOriginAndContentAddressed(t *testing.T) {
+	handler := assetTestHandler(t)
+	css := assetTestRequest(handler, "GET", stylesheetURL(), nil)
+	font := assetTestRequest(handler, "GET", appFontURL, nil)
+	if !strings.Contains(css.Body.String(), "url("+appFontURL+")") || strings.Contains(css.Body.String(), "url(golos-text.woff2)") {
+		t.Fatal("stylesheet did not reference the same-origin font")
+	}
+	if !bytes.HasPrefix(font.Body.Bytes(), []byte("wOF2")) || !strings.HasPrefix(font.Header().Get("ETag"), "\""+strings.TrimSuffix(strings.TrimPrefix(appFontURL, "/assets/fonts/golos-text-"), ".woff2")) {
+		t.Fatal("font is not a WOFF2 asset addressed by its content hash")
 	}
 }
 

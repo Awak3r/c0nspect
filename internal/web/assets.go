@@ -66,7 +66,7 @@ func prepareStaticAssets() staticAssets {
 		panic(fmt.Errorf("prepare embedded reader assets: %w", err))
 	}
 	result := staticAssets{
-		paths:        make(map[string]assetRoute, 2*len(reader)+1),
+		paths:        make(map[string]assetRoute, 2*len(reader)+3),
 		readerPrefix: fmt.Sprintf("/assets/reader/%x/", bundle.Sum(nil)),
 	}
 	for name, asset := range reader {
@@ -74,6 +74,8 @@ func prepareStaticAssets() staticAssets {
 		result.paths[result.readerPrefix+name] = assetRoute{asset: asset, immutable: true}
 	}
 	result.paths["/assets/app.css"] = assetRoute{asset: prepareStaticAsset("app.css", []byte(appCSS))}
+	result.paths[appFontURL] = assetRoute{asset: prepareStaticAsset("golos-text.woff2", appFont), immutable: true}
+	result.paths["/assets/fonts/LICENSE-Golos-Text.txt"] = assetRoute{asset: prepareStaticAsset("LICENSE-Golos-Text.txt", appFontLicense)}
 	return result
 }
 
