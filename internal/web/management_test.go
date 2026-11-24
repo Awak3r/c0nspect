@@ -68,6 +68,11 @@ func TestCompactManagementTemplates(t *testing.T) {
 	if browserTestInput(t, browserTestForm(t, doc, "/notes/"+note.ID+"/replace"), "version") != "2" {
 		t.Error("note settings lost optimistic concurrency version")
 	}
+	browserTestManagementSharingState(t, browserTestManagementNote(t, doc, note.ID), note.ID, true)
+
+	page = render("manage-note", pageData{Project: project, Projects: []store.Project{project}, Note: other, Entries: []noteEntry{{Note: other}}})
+	doc = browserTestDocument(t, page)
+	browserTestManagementSharingState(t, browserTestManagementNote(t, doc, other.ID), other.ID, false)
 
 	response := httptest.NewRecorder()
 	app.Handler().ServeHTTP(response, httptest.NewRequest("GET", "/notes/"+note.ID+"/manage", nil))

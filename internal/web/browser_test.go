@@ -215,13 +215,39 @@ func browserTestReferrerMeta(t *testing.T, doc *html.Node, want string) {
 
 func browserTestManagementNote(t *testing.T, doc *html.Node, noteID string) *html.Node {
 	t.Helper()
-	for _, article := range browserTestElements(doc, "article") {
-		if browserTestAttr(article, "aria-labelledby") == "note-"+noteID+"-title" {
-			return article
-		}
+	main := browserTestElements(doc, "main")
+	if len(main) != 1 {
+		t.Fatalf("management page has %d main elements, want 1", len(main))
 	}
-	t.Fatalf("management page omitted note %s", noteID)
-	return nil
+	browserTestForm(t, main[0], "/notes/"+noteID+"/metadata")
+	return main[0]
+}
+
+const browserTestPublicationWarning = "Замена файла и правки через MCP сразу станут видны читателям."
+
+func browserTestManagementSharingState(t *testing.T, entry *html.Node, noteID string, shared bool) {
+	t.Helper()
+	replace := browserTestForm(t, entry, "/notes/"+noteID+"/replace")
+	seenWarning := false
+	seenShared, seenPrivate := false, false
+	browserTestWalk(entry, func(node *html.Node) {
+		if node.Type == html.ElementNode {
+			switch node.Data {
+			case "p":
+				seenWarning = seenWarning || browserTestText(node) == browserTestPublicationWarning
+			case "strong":
+				text := browserTestText(node)
+				seenShared = seenShared || text == "Доступен по ссылке"
+				seenPrivate = seenPrivate || text == "Только для вас"
+			}
+		}
+		if node == replace && shared && !seenWarning {
+			t.Error("shared-note warning does not precede the replacement form")
+		}
+	})
+	if seenWarning != shared || seenShared != shared || seenPrivate == shared {
+		t.Error("management warning or access label does not reflect the note's sharing state")
+	}
 }
 
 func browserTestShareActions(t *testing.T, doc *html.Node, noteID, csrf string) []string {
@@ -918,22 +944,7 @@ func TestBrowserReplacementAndMetadataPreserveIdentityShareAndAssets(t *testing.
 		page := b.request(t, "GET", "/notes/"+note.ID+"/manage", nil, nil)
 		browserTestStatus(t, page, 200)
 		entry := browserTestManagementNote(t, browserTestDocument(t, page), note.ID)
-		replace := browserTestForm(t, entry, "/notes/"+note.ID+"/replace")
-		seenWarning := false
-		browserTestWalk(entry, func(node *html.Node) {
-			if node.Type == html.ElementNode && node.Data == "p" && strings.HasPrefix(browserTestText(node), "Доступен по ссылке.") {
-				seenWarning = true
-				if !strings.Contains(browserTestText(node), "Замена файла и правки через MCP сразу станут видны читателям.") {
-					t.Error("shared-note warning omitted the immediate publication risk")
-				}
-			}
-			if node == replace && shared && !seenWarning {
-				t.Error("shared-note warning does not precede the replacement form")
-			}
-		})
-		if seenWarning != shared || strings.Contains(browserTestText(entry), "Публичный доступ закрыт.") == shared {
-			t.Error("management warning does not reflect the note's sharing state")
-		}
+		browserTestManagementSharingState(t, entry, note.ID, shared)
 	}
 	checkSharedWarning(false)
 	b.changeShare(t, note.ID, "create")
@@ -1471,7 +1482,7 @@ func TestBrowserImageWarningsOnlyAppearInManagement(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			response := tc.client.request(t, "GET", tc.path, nil, nil)
 			doc := browserTestReadOnly(t, response, tc.public)
-			browserTestNoPrivateValues(t, response, "Не все изображения доступны:", "Изображение не связано с конспектом:", "Внешнее изображение отключено; загрузите файл в сервис:", relative, unknown, external, "Доступен по ссылке.")
+			browserTestNoPrivateValues(t, response, "Не все изображения доступны:", "Изображение не связано с конспектом:", "Внешнее изображение отключено; загрузите файл в сервис:", relative, unknown, external, browserTestPublicationWarning)
 			images := browserTestElements(doc, "img")
 			if len(images) != 1 || browserTestAttr(images[0], "src") != tc.path+"/attachments/"+image.ID {
 				t.Error("reader diagnostics changed authorized image rendering")
