@@ -3,6 +3,7 @@ package web
 import (
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
+	"golang.org/x/net/html"
 )
 
 func projectFields(r *http.Request) (string, string, error) {
@@ -57,7 +59,7 @@ func (a *App) createProject(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/projects/"+p.ID+"/manage", 303)
+	http.Redirect(w, r, "/projects/"+p.ID, http.StatusSeeOther)
 }
 func (a *App) project(w http.ResponseWriter, r *http.Request) {
 	p, err := a.db.Project(r.Context(), r.PathValue("projectID"))
@@ -217,7 +219,7 @@ func (a *App) importNotes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	http.Redirect(w, r, "/projects/"+projectID+"/manage", 303)
+	http.Redirect(w, r, "/projects/"+projectID, http.StatusSeeOther)
 }
 func (a *App) replaceNote(w http.ResponseWriter, r *http.Request) {
 	version, err := formVersion(r)
@@ -350,7 +352,35 @@ func (a *App) renderNote(w http.ResponseWriter, r *http.Request, n store.Note, p
 		a.fail(w, r, err)
 		return
 	}
-	a.page(w, r, 200, "reader", pageData{Title: n.Title, Note: n, Project: p, Content: content})
+	a.page(w, r, 200, "reader", pageData{
+		Title: n.Title, Note: n, Project: p, Content: content,
+		DocumentHasTitle: documentHasTitle(content, n.Title),
+	})
+}
+
+// Keep the Markdown heading (including its inline formatting) when it already
+// serves as the document title. Never remove a heading from the source or HTML.
+func documentHasTitle(content template.HTML, title string) bool {
+	z := html.NewTokenizer(strings.NewReader(strings.TrimLeft(string(content), " \t\r\n")))
+	if z.Next() != html.StartTagToken {
+		return false
+	}
+	if name, _ := z.TagName(); string(name) != "h1" {
+		return false
+	}
+	var heading strings.Builder
+	for {
+		switch z.Next() {
+		case html.TextToken:
+			heading.Write(z.Text())
+		case html.EndTagToken:
+			if name, _ := z.TagName(); string(name) == "h1" {
+				return strings.TrimSpace(heading.String()) == title
+			}
+		case html.ErrorToken:
+			return false
+		}
+	}
 }
 func (a *App) ownerAttachment(w http.ResponseWriter, r *http.Request) {
 	a.attachment(w, r, r.PathValue("noteID"), r.PathValue("attachmentID"))

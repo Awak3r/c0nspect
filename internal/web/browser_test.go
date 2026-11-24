@@ -354,10 +354,10 @@ func (b *browserTestClient) createProject(t *testing.T, name, description string
 	response := b.form(t, "/projects", url.Values{"name": {name}, "description": {description}})
 	browserTestStatus(t, response, 303)
 	path := response.Header().Get("Location")
-	if !strings.HasPrefix(path, "/projects/") || !strings.HasSuffix(path, "/manage") {
+	id, ok := strings.CutPrefix(path, "/projects/")
+	if !ok || id == "" || strings.Contains(id, "/") {
 		t.Fatalf("unexpected project redirect %q", path)
 	}
-	id := strings.TrimSuffix(strings.TrimPrefix(path, "/projects/"), "/manage")
 	project, err := b.db.Project(t.Context(), id)
 	if err != nil {
 		t.Fatal(err)
@@ -393,7 +393,7 @@ func (b *browserTestClient) importNotes(t *testing.T, projectID string, files ..
 		before[note.ID] = true
 	}
 	response := b.multipart(t, "/projects/"+projectID+"/notes", nil, files...)
-	browserTestRedirect(t, response, "/projects/"+projectID+"/manage")
+	browserTestRedirect(t, response, "/projects/"+projectID)
 	var imported []store.Note
 	for _, note := range b.notes(t, projectID) {
 		if !before[note.ID] {
@@ -743,7 +743,7 @@ func TestBrowserProjectsAndMarkdownImports(t *testing.T) {
 	page := b.request(t, "GET", managePath, nil, nil)
 	browserTestStatus(t, page, 200)
 	doc := browserTestDocument(t, page)
-	for _, action := range []string{"/projects/" + project.ID + "/edit", "/projects/" + project.ID + "/notes", "/projects/" + project.ID + "/delete"} {
+	for _, action := range []string{"/projects/" + project.ID + "/edit", "/projects/" + project.ID + "/delete"} {
 		form := browserTestForm(t, doc, action)
 		if browserTestAttr(form, "method") != "post" || browserTestInput(t, form, "csrf") != b.csrf {
 			t.Errorf("management form %q has incorrect method or CSRF", action)
@@ -798,6 +798,10 @@ func TestBrowserProjectsAndMarkdownImports(t *testing.T) {
 	doc = browserTestDocument(t, page)
 	if !browserTestHasLink(doc, managePath) {
 		t.Error("project page omitted separate management link")
+	}
+	form := browserTestForm(t, doc, "/projects/"+project.ID+"/notes")
+	if browserTestAttr(form, "method") != "post" || browserTestInput(t, form, "csrf") != b.csrf {
+		t.Error("project import omitted POST or CSRF")
 	}
 	for _, note := range b.notes(t, project.ID) {
 		if !browserTestHasLink(doc, "/notes/"+note.ID) {
@@ -883,7 +887,7 @@ func TestBrowserRootSearchSortsByTitle(t *testing.T) {
 			}
 			var selected []string
 			for _, selectNode := range browserTestElements(doc, "select") {
-				if browserTestAttr(selectNode, "id") != "search-sort" {
+				if browserTestAttr(selectNode, "id") != "library-sort" {
 					continue
 				}
 				for _, option := range browserTestElements(selectNode, "option") {
@@ -1125,7 +1129,7 @@ func TestBrowserReadersSharingAndAttachmentAuthorization(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			response := tc.client.request(t, "GET", tc.path, nil, nil)
 			doc := browserTestReadOnly(t, response, tc.public)
-			if !tc.public && (!browserTestHasLink(doc, "/projects") || !browserTestHasLink(doc, "/projects/"+project.ID)) {
+			if !tc.public && !browserTestHasLink(doc, "/projects/"+project.ID) {
 				t.Error("owner reader omitted permitted table-of-contents navigation")
 			}
 			browserTestNoPrivateValues(t, response, b.csrf, b.cookie.Value, activeShare.TokenHash, app.cfg.DataDir, canary.URL)

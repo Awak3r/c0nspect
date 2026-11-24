@@ -34,8 +34,9 @@ func TestCompactManagementTemplates(t *testing.T) {
 		}
 	}
 	for _, form := range browserTestElements(doc, "form") {
-		if strings.HasPrefix(browserTestAttr(form, "action"), "/notes/") {
-			t.Error("project management still contains individual note forms")
+		action := browserTestAttr(form, "action")
+		if strings.HasPrefix(action, "/notes/") || action == "/projects/"+project.ID+"/notes" {
+			t.Error("project management still contains import or individual note forms")
 		}
 	}
 	if len(browserTestElements(doc, "article")) != 0 {
@@ -64,10 +65,6 @@ func TestCompactManagementTemplates(t *testing.T) {
 		t.Error("note settings lost optimistic concurrency version")
 	}
 
-	page = render("manage", pageData{Project: project})
-	if !strings.Contains(page.Body.String(), "disclosure\" open>") {
-		t.Error("empty project should expose the import form")
-	}
 	response := httptest.NewRecorder()
 	app.Handler().ServeHTTP(response, httptest.NewRequest("GET", "/notes/"+note.ID+"/manage", nil))
 	browserTestRedirect(t, response, "/login")

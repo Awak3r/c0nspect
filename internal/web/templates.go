@@ -10,7 +10,7 @@ import (
 
 type pageData struct {
 	Title, CSRF, Error, Message, Query, Sort, ShareURL, KeySecret string
-	Owner                                                         bool
+	Owner, DocumentHasTitle                                       bool
 	ShareActive                                                   bool
 	CurrentPage                                                   string
 	Projects                                                      []store.Project
@@ -76,7 +76,7 @@ const pageTemplates = `
     {{if .Owner}}
     <nav class="site-nav" aria-label="Главная навигация">
       <a href="/projects"{{if ne .CurrentPage "keys"}} aria-current="page"{{end}}>Проекты</a>
-      <a href="/settings/api-keys"{{if eq .CurrentPage "keys"}} aria-current="page"{{end}}>API-ключи</a>
+      <a href="/settings/api-keys"{{if eq .CurrentPage "keys"}} aria-current="page"{{end}}>Настройки</a>
     </nav>
     <form method="post" action="/logout">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -96,12 +96,31 @@ const pageTemplates = `
   {{range .}}
   <li>
     <a class="item-title" href="/notes/{{.ID}}">{{.Title}}</a>
-    <span class="item-meta">Изменён <time>{{date .UpdatedAt}} UTC</time></span>
+    {{template "library-date" .UpdatedAt}}
   </li>
   {{else}}
   <li class="empty-state">Конспектов пока нет.</li>
   {{end}}
 </ul>{{end}}
+
+{{define "library-date"}}
+<time class="item-meta list-date" datetime="{{.UTC.Format "2006-01-02T15:04:05Z"}}" title="Изменено: {{date .}} UTC">{{.UTC.Format "02.01.2006"}}</time>
+{{end}}
+
+{{define "library-search"}}
+<form class="library-search" role="search" method="get" action="{{if .Project.ID}}/projects/{{.Project.ID}}{{else}}/projects{{end}}">
+  <label class="visually-hidden" for="library-query">{{if .Project.ID}}Поиск в проекте{{else}}Поиск по всем конспектам{{end}}</label>
+  <input id="library-query" name="q" type="search" value="{{.Query}}" placeholder="{{if .Project.ID}}Поиск в проекте{{else}}Поиск по всем конспектам{{end}}">
+  {{if or .Project.ID .Query}}
+  <label class="visually-hidden" for="library-sort">Сортировка конспектов</label>
+  <select id="library-sort" name="sort">
+    <option value="updated"{{if ne .Sort "title"}} selected{{end}}>По обновлению</option>
+    <option value="title"{{if eq .Sort "title"}} selected{{end}}>По названию</option>
+  </select>
+  {{end}}
+  <button class="button-quiet" type="submit">Найти</button>
+</form>
+{{end}}
 
 {{define "login"}}{{template "head" .}}
 <body class="auth-page">
@@ -132,69 +151,47 @@ const pageTemplates = `
 {{define "projects"}}{{template "head" .}}
 <body>
 {{template "header" .}}
-<main class="shell" id="main">
-  <div class="page-heading library-heading">
+<main class="shell library-shell" id="main">
+  <div class="library-titlebar">
     <h1>Проекты</h1>
-    <span class="library-total">Всего проектов: {{len .Projects}}</span>
+    <details class="library-action">
+      <summary>Новый проект</summary>
+      <form class="stack library-action-form" method="post" action="/projects">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <div>
+          <label for="project-name">Название</label>
+          <input id="project-name" name="name" type="text" maxlength="300" required>
+        </div>
+        <div>
+          <label for="project-description">Описание <span class="optional">(необязательно)</span></label>
+          <textarea id="project-description" name="description" rows="3"></textarea>
+        </div>
+        <div><button type="submit">Создать проект</button></div>
+      </form>
+    </details>
   </div>
   {{template "notices" .}}
-  <div class="library-layout">
-    <div class="library-main">
-  <section class="search-panel" aria-labelledby="search-title">
-    <h2 id="search-title">Поиск конспектов</h2>
-    <form class="filter-bar" role="search" method="get" action="/projects">
-      <div class="grow">
-        <label for="query">Заголовок или текст</label>
-        <input id="query" name="q" type="search" value="{{.Query}}" placeholder="Найти в своих конспектах">
-      </div>
-      <div>
-        <label for="search-sort">Сортировка</label>
-        <select id="search-sort" name="sort">
-          <option value="updated"{{if ne .Sort "title"}} selected{{end}}>Сначала обновлённые</option>
-          <option value="title"{{if eq .Sort "title"}} selected{{end}}>По названию</option>
-        </select>
-      </div>
-      <button type="submit">Найти</button>
-    </form>
-    {{if or .Query .Notes}}
-    <h3>Результаты поиска</h3>
+  {{template "library-search" .}}
+  {{if .Query}}
+  <section class="library-section" aria-labelledby="results-title">
+    <div class="section-heading"><h2 id="results-title">Результаты поиска</h2><a class="text-action" href="/projects">Сбросить поиск</a></div>
     {{if .Notes}}{{template "note-list" .Notes}}{{else}}<p class="empty-state">Ничего не найдено.</p>{{end}}
+  </section>
+  {{else if .Projects}}
+  <ul class="project-list">
+    {{range .Projects}}
+    <li>
+      <div class="project-row-main">
+        <a class="item-title" href="/projects/{{.ID}}">{{.Name}}</a>
+        {{if .Description}}<p class="description">{{.Description}}</p>{{end}}
+      </div>
+      {{template "library-date" .UpdatedAt}}
+    </li>
     {{end}}
-  </section>
-  <section class="section" aria-labelledby="projects-title">
-    <div class="section-heading"><h2 id="projects-title">Все проекты</h2></div>
-    <div class="project-grid">
-      {{range .Projects}}
-      <article class="project-card">
-        <div class="project-card-main">
-          <h3><a href="/projects/{{.ID}}">{{.Name}}</a></h3>
-          {{if .Description}}<p class="description">{{.Description}}</p>{{end}}
-        </div>
-        <p class="item-meta">Обновлён <time>{{date .UpdatedAt}} UTC</time></p>
-      </article>
-      {{else}}
-      <p class="empty-state">Проектов нет.</p>
-      {{end}}
-    </div>
-  </section>
-    </div>
-  <aside class="library-compose" aria-labelledby="create-project-title">
-    <h2 id="create-project-title">Новый проект</h2>
-
-    <form class="stack" method="post" action="/projects">
-      <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <div>
-        <label for="project-name">Название</label>
-        <input id="project-name" name="name" type="text" maxlength="300" required>
-      </div>
-      <div>
-        <label for="project-description">Описание <span class="optional">(необязательно)</span></label>
-        <textarea id="project-description" name="description" rows="3"></textarea>
-      </div>
-      <button type="submit">Создать проект</button>
-    </form>
-  </aside>
-  </div>
+  </ul>
+  {{else}}
+  <p class="empty-state">Проектов пока нет.</p>
+  {{end}}
 </main>
 </body>
 </html>{{end}}
@@ -202,31 +199,34 @@ const pageTemplates = `
 {{define "project"}}{{template "head" .}}
 <body>
 {{template "header" .}}
-<main class="shell" id="main">
-  <p class="breadcrumbs"><a href="/projects">Все проекты</a></p>
-  <div class="page-heading">
-    <h1>{{.Project.Name}}</h1>
-    {{if .Project.Description}}<p class="description">{{.Project.Description}}</p>{{end}}
-    <p><a href="/projects/{{.Project.ID}}/manage">Управление проектом</a></p>
+<main class="shell library-shell" id="main">
+  <p class="breadcrumbs"><a href="/projects">← Проекты</a></p>
+  <div class="library-titlebar">
+    <div>
+      <h1>{{.Project.Name}}</h1>
+      {{if .Project.Description}}<p class="description library-description">{{.Project.Description}}</p>{{end}}
+    </div>
+    <details class="library-action"{{if not (or .Query .Notes)}} open{{end}}>
+      <summary>Импорт .md</summary>
+      <form class="stack library-action-form" method="post" action="/projects/{{.Project.ID}}/notes" enctype="multipart/form-data">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <div>
+          <label for="import-files">Файлы .md (UTF-8)</label>
+          <input id="import-files" name="files" type="file" accept=".md,text/markdown" aria-describedby="import-hint" multiple required>
+          <p id="import-hint" class="hint">Каждый файл — новый конспект.</p>
+        </div>
+        <div><button type="submit">Загрузить</button></div>
+      </form>
+    </details>
   </div>
   {{template "notices" .}}
-  <section class="panel" aria-labelledby="notes-title">
-    <h2 id="notes-title">Конспекты</h2>
-    <form class="filter-bar" role="search" method="get" action="/projects/{{.Project.ID}}">
-      <div class="grow">
-        <label for="project-query">Поиск по заголовку и тексту</label>
-        <input id="project-query" name="q" type="search" value="{{.Query}}">
-      </div>
-      <div>
-        <label for="note-sort">Сортировка</label>
-        <select id="note-sort" name="sort">
-          <option value="updated"{{if ne .Sort "title"}} selected{{end}}>Сначала обновлённые</option>
-          <option value="title"{{if eq .Sort "title"}} selected{{end}}>По названию</option>
-        </select>
-      </div>
-      <button type="submit">Показать</button>
-    </form>
-    {{if and .Query (not .Notes)}}<p class="empty-state">Ничего не найдено.</p>{{else}}{{template "note-list" .Notes}}{{end}}
+  <section class="library-section" aria-labelledby="notes-title">
+    <div class="section-heading">
+      <h2 id="notes-title">Конспекты</h2>
+      <a class="text-action" href="/projects/{{.Project.ID}}/manage">Управление проектом</a>
+    </div>
+    {{if or .Query .Notes}}{{template "library-search" .}}{{end}}
+    {{if and .Query (not .Notes)}}<p class="empty-state">Ничего не найдено. <a href="/projects/{{.Project.ID}}">Сбросить поиск</a></p>{{else}}{{template "note-list" .Notes}}{{end}}
   </section>
 </main>
 </body>
@@ -258,18 +258,7 @@ const pageTemplates = `
         <div><button type="submit">Сохранить проект</button></div>
       </form>
     </details>
-    <details class="panel disclosure"{{if not .Notes}} open{{end}}>
-      <summary id="import-title">Загрузить конспекты</summary>
-      <p id="import-hint" class="hint">Каждый файл — новый конспект.</p>
-      <form class="stack" method="post" action="/projects/{{.Project.ID}}/notes" enctype="multipart/form-data">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <div>
-          <label for="import-files">Файлы .md (UTF-8)</label>
-          <input id="import-files" name="files" type="file" accept=".md,text/markdown" aria-describedby="import-hint" multiple required>
-        </div>
-        <div><button type="submit">Загрузить файлы</button></div>
-      </form>
-    </details>
+
   </div>
   <section class="section" aria-labelledby="manage-notes-title">
     <div class="section-heading"><h2 id="manage-notes-title">Конспекты</h2><span class="library-total">Всего: {{len .Notes}}</span></div>
@@ -413,12 +402,11 @@ const pageTemplates = `
 <main class="reader-shell">
   {{if .Owner}}
   <nav class="reader-nav" aria-label="Навигация по проектам">
-    <a href="/projects">Проекты</a>
-    <a href="/projects/{{.Note.ProjectID}}">К оглавлению проекта</a>
+    <a href="/projects/{{.Note.ProjectID}}">← {{.Project.Name}}</a>
   </nav>
   {{end}}
-  <article aria-labelledby="note-title">
-    <header class="reader-heading"><h1 id="note-title">{{.Note.Title}}</h1></header>
+  <article {{if .DocumentHasTitle}}class="reader-document-title" aria-label="{{.Note.Title}}"{{else}}aria-labelledby="note-title"{{end}}>
+    {{if not .DocumentHasTitle}}<header class="reader-heading"><h1 id="note-title">{{.Note.Title}}</h1></header>{{end}}
     <div class="markdown">{{.Content}}</div>
   </article>
 </main>
