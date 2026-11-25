@@ -219,39 +219,6 @@ func browserTestReferrerMeta(t *testing.T, doc *html.Node, want string) {
 	}
 }
 
-func browserTestManagementNote(t *testing.T, doc *html.Node, noteID string) *html.Node {
-	t.Helper()
-	main := browserTestElements(doc, "main")
-	if len(main) != 1 {
-		t.Fatalf("management page has %d main elements, want 1", len(main))
-	}
-	browserTestForm(t, main[0], "/notes/"+noteID+"/metadata")
-	return main[0]
-}
-
-const browserTestPublicationWarning = "Замена файла и правки через MCP сразу станут видны читателям."
-
-func browserTestReplacementPublicationWarning(t *testing.T, entry *html.Node, noteID string, shared bool) {
-	t.Helper()
-	path := "/notes/" + noteID
-	if browserTestHasLink(entry, path+"/share") {
-		t.Error("note settings should not contain sharing controls")
-	}
-	replace := browserTestForm(t, entry, path+"/replace")
-	seenWarning := false
-	browserTestWalk(replace.Parent, func(node *html.Node) {
-		if node.Type == html.ElementNode && node.Data == "p" && browserTestText(node) == browserTestPublicationWarning {
-			seenWarning = true
-		}
-		if node == replace && shared && !seenWarning {
-			t.Error("shared-note warning does not precede the replacement form")
-		}
-	})
-	if seenWarning != shared {
-		t.Error("replacement warning does not reflect the note's sharing state")
-	}
-}
-
 func browserTestNoPrivateValues(t *testing.T, response *httptest.ResponseRecorder, values ...string) {
 	t.Helper()
 	for _, value := range values {
@@ -411,21 +378,6 @@ func browserTestMarkdown(name, source string) browserTestUpload {
 	return browserTestUpload{field: "files", name: name, data: []byte(source)}
 }
 
-func (b *browserTestClient) version(t *testing.T, note store.Note, action string) string {
-	t.Helper()
-	page := b.request(t, "GET", "/notes/"+note.ID+"/manage", nil, nil)
-	browserTestStatus(t, page, 200)
-	form := browserTestForm(t, browserTestDocument(t, page), "/notes/"+note.ID+"/"+action)
-	if csrf := browserTestInput(t, form, "csrf"); csrf != b.csrf {
-		t.Fatal("management form has wrong session CSRF token")
-	}
-	version := browserTestInput(t, form, "version")
-	if version != strconv.FormatInt(note.Version, 10) {
-		t.Fatalf("form version = %q, stored version = %d", version, note.Version)
-	}
-	return version
-}
-
 func (b *browserTestClient) uploadImage(t *testing.T, note store.Note, name string) store.Attachment {
 	t.Helper()
 	before, err := b.db.Attachments(t.Context(), note.ID)
@@ -433,7 +385,7 @@ func (b *browserTestClient) uploadImage(t *testing.T, note store.Note, name stri
 		t.Fatal(err)
 	}
 	response := b.multipart(t, "/notes/"+note.ID+"/attachments", nil, browserTestUpload{field: "file", name: name, data: apiTestPNG(t)})
-	browserTestRedirect(t, response, "/notes/"+note.ID+"/manage")
+	browserTestRedirect(t, response, "/notes/"+note.ID)
 	after, err := b.db.Attachments(t.Context(), note.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -444,16 +396,9 @@ func (b *browserTestClient) uploadImage(t *testing.T, note store.Note, name stri
 	if current := b.note(t, note.ID); !reflect.DeepEqual(current, note) {
 		t.Error("upload changed note source or version")
 	}
-	page := b.request(t, "GET", "/notes/"+note.ID+"/manage", nil, nil)
-	browserTestStatus(t, page, 200)
-	doc := browserTestDocument(t, page)
 	for _, file := range after {
 		if slices.ContainsFunc(before, func(old store.Attachment) bool { return old.ID == file.ID }) {
 			continue
-		}
-		input := browserTestInputID(doc, "markdown-"+file.ID)
-		if input == nil || browserTestAttr(input, "value") != imageMarkdown(file) || !browserTestHasLink(doc, "/notes/"+note.ID+"/attachments/"+file.ID) {
-			t.Fatal("management page omitted attachment URL or Markdown snippet")
 		}
 		data, err := os.ReadFile(filepath.Join(b.app.cfg.DataDir, "uploads", file.StorageKey))
 		if err != nil || !bytes.Equal(data, apiTestPNG(t)) {
@@ -639,12 +584,15 @@ func TestBrowserFormPagesPreserveSameOriginReferrerPolicy(t *testing.T) {
 	anonymous := &browserTestClient{app: app, db: db}
 	project := b.createProject(t, "Native forms", "")
 	note := b.importNotes(t, project.ID, browserTestMarkdown("forms.md", "# Form policy"))[0]
+	notePath := "/notes/" + note.ID
+	browserTestRedirect(t, b.request(t, "GET", notePath+"/manage", nil, nil), notePath)
+	browserTestRedirect(t, anonymous.request(t, "GET", notePath+"/manage", nil, nil), "/login")
 	for _, tc := range []struct {
 		path   string
 		client *browserTestClient
 	}{
 		{"/login", anonymous}, {"/projects", b}, {"/projects/" + project.ID, b},
-		{"/notes/" + note.ID + "/manage", b}, {"/notes/" + note.ID + "/share", b}, {"/settings/api-keys", b},
+		{"/notes/" + note.ID + "/share", b}, {"/settings/api-keys", b},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			response := tc.client.request(t, "GET", tc.path, nil, nil)
@@ -915,22 +863,13 @@ func TestBrowserReplacementAndMetadataPreserveIdentityShareAndAssets(t *testing.
 	destination := b.createProject(t, "Destination project", "")
 	note := b.importNotes(t, project.ID, browserTestMarkdown("original.md", "# Original title\n\nOld body."))[0]
 	image := b.uploadImage(t, note, "diagram.png")
-	checkSharedWarning := func(shared bool) {
-		t.Helper()
-		page := b.request(t, "GET", "/notes/"+note.ID+"/manage", nil, nil)
-		browserTestStatus(t, page, 200)
-		entry := browserTestManagementNote(t, browserTestDocument(t, page), note.ID)
-		browserTestReplacementPublicationWarning(t, entry, note.ID, shared)
-	}
-	checkSharedWarning(false)
 	b.changeShare(t, note.ID, "create")
 	sharePath := b.shareURL(t, note.ID)
 	note = b.note(t, note.ID)
-	checkSharedWarning(true)
-	version := b.version(t, note, "replace")
+	version := strconv.FormatInt(note.Version, 10)
 	source := "# A different heading must not rename the note\n\nНовый текст.\n\n![diagram](attachment:" + image.ID + ")\n"
 	response := b.multipart(t, "/notes/"+note.ID+"/replace", url.Values{"version": {version}}, browserTestUpload{field: "file", name: "replacement.MD", data: []byte(source)})
-	browserTestRedirect(t, response, "/notes/"+note.ID+"/manage")
+	browserTestRedirect(t, response, "/notes/"+note.ID)
 	replaced := b.note(t, note.ID)
 	if replaced.ID != note.ID || replaced.Title != note.Title || replaced.ProjectID != note.ProjectID || replaced.Markdown != source || replaced.SourceName != "replacement.MD" || replaced.Version != note.Version+1 || !replaced.CreatedAt.Equal(note.CreatedAt) || !replaced.Shared {
 		t.Fatalf("replacement lost note identity, metadata, share, or new source: %+v", replaced)
@@ -960,9 +899,9 @@ func TestBrowserReplacementAndMetadataPreserveIdentityShareAndAssets(t *testing.
 		t.Error("failed or stale replacement changed note")
 	}
 
-	metadataVersion := b.version(t, replaced, "metadata")
+	metadataVersion := strconv.FormatInt(replaced.Version, 10)
 	response = b.form(t, "/notes/"+note.ID+"/metadata", url.Values{"version": {metadataVersion}, "title": {"Переименованный конспект"}, "project_id": {destination.ID}})
-	browserTestRedirect(t, response, "/notes/"+note.ID+"/manage")
+	browserTestRedirect(t, response, "/notes/"+note.ID)
 	moved := b.note(t, note.ID)
 	if moved.ID != note.ID || moved.ProjectID != destination.ID || moved.Title != "Переименованный конспект" || moved.Version != replaced.Version+1 || moved.Markdown != source || moved.SourceName != replaced.SourceName || !moved.CreatedAt.Equal(note.CreatedAt) || !moved.Shared {
 		t.Fatalf("metadata move lost content or identity: %+v", moved)
@@ -1067,7 +1006,7 @@ func TestBrowserReadersSharingAndAttachmentAuthorization(t *testing.T) {
 		"<iframe src=\"" + canary.URL + "/frame\"></iframe>\n\n" +
 		"<img src=\"" + canary.URL + "/raw.png\" onerror=\"alert(1)\">\n\n" +
 		"[unsafe](javascript:alert%281%29)\n"
-	browserTestRedirect(t, b.multipart(t, "/notes/"+note.ID+"/replace", url.Values{"version": {b.version(t, note, "replace")}}, browserTestUpload{field: "file", name: "reader.md", data: []byte(source)}), "/notes/"+note.ID+"/manage")
+	browserTestRedirect(t, b.multipart(t, "/notes/"+note.ID+"/replace", url.Values{"version": {strconv.FormatInt(note.Version, 10)}}, browserTestUpload{field: "file", name: "reader.md", data: []byte(source)}), "/notes/"+note.ID)
 	note = b.note(t, note.ID)
 
 	admin := b.request(t, "GET", "/notes/"+note.ID+"/share", nil, nil)
@@ -1382,13 +1321,12 @@ func TestBrowserExistingShareStillWorksAfterAppSecretChange(t *testing.T) {
 	}
 }
 
-func TestBrowserImageWarningsOnlyAppearInManagement(t *testing.T) {
+func TestBrowserOnlyRendersAuthorizedImages(t *testing.T) {
 	app, db := newTestApp(t)
 	b := browserTestOwner(t, app, db)
 	public := &browserTestClient{app: app, db: db}
 	project := b.createProject(t, "Image diagnostics", "")
 	note := b.importNotes(t, project.ID, browserTestMarkdown("images.md", "# Image warnings"))[0]
-	quiet := b.importNotes(t, project.ID, browserTestMarkdown("quiet.md", "# No broken images"))[0]
 	image := b.uploadImage(t, note, "available.png")
 	var fetches atomic.Int64
 	canary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1403,39 +1341,7 @@ func TestBrowserImageWarningsOnlyAppearInManagement(t *testing.T) {
 		"![missing relative](" + relative + ")\n\n![unknown attachment](" + unknown + ")\n\n![external](" + external + ")\n\n" +
 		"![duplicate](" + relative + ")\n\n![reference duplicate][tracker]\n\n[tracker]: " + external + "\n\n" +
 		"```md\n![code example](images/code-example.png)\n```\n"
-	browserTestRedirect(t, b.multipart(t, "/notes/"+note.ID+"/replace", url.Values{"version": {b.version(t, note, "replace")}}, browserTestUpload{field: "file", name: "warnings.md", data: []byte(source)}), "/notes/"+note.ID+"/manage")
-	page := b.request(t, "GET", "/notes/"+note.ID+"/manage", nil, nil)
-	browserTestStatus(t, page, 200)
-	browserTestSecurity(t, page)
-	doc := browserTestDocument(t, page)
-	entry := browserTestManagementNote(t, doc, note.ID)
-	var panels []*html.Node
-	for _, div := range browserTestElements(entry, "div") {
-		if browserTestAttr(div, "role") == "status" && slices.Contains(strings.Fields(browserTestAttr(div, "class")), "notice-error") {
-			panels = append(panels, div)
-		}
-	}
-	if len(panels) != 1 || !strings.Contains(browserTestText(panels[0]), "Не все изображения доступны:") {
-		t.Fatal("management page omitted the note-scoped image warning panel")
-	}
-	var warnings []string
-	for _, item := range browserTestElements(panels[0], "li") {
-		warnings = append(warnings, browserTestText(item))
-	}
-	want := []string{
-		"Изображение не связано с конспектом: " + relative,
-		"Изображение не связано с конспектом: " + unknown,
-		"Внешнее изображение отключено; загрузите файл в сервис: " + external,
-	}
-	if !reflect.DeepEqual(warnings, want) {
-		t.Errorf("image warnings = %v, want %v; valid attachments, duplicates, and code examples must not add warnings", warnings, want)
-	}
-	quietPage := b.request(t, "GET", "/notes/"+quiet.ID+"/manage", nil, nil)
-	browserTestStatus(t, quietPage, 200)
-	if strings.Contains(browserTestText(browserTestManagementNote(t, browserTestDocument(t, quietPage), quiet.ID)), "Не все изображения доступны:") {
-		t.Error("one note's diagnostics leaked into another management page")
-	}
-
+	browserTestRedirect(t, b.multipart(t, "/notes/"+note.ID+"/replace", url.Values{"version": {strconv.FormatInt(note.Version, 10)}}, browserTestUpload{field: "file", name: "warnings.md", data: []byte(source)}), "/notes/"+note.ID)
 	b.changeShare(t, note.ID, "create")
 	sharePath := b.shareURL(t, note.ID)
 	note = b.note(t, note.ID)
@@ -1451,13 +1357,13 @@ func TestBrowserImageWarningsOnlyAppearInManagement(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			response := tc.client.request(t, "GET", tc.path, nil, nil)
 			doc := browserTestReadOnly(t, response, tc.public)
-			browserTestNoPrivateValues(t, response, "Не все изображения доступны:", "Изображение не связано с конспектом:", "Внешнее изображение отключено; загрузите файл в сервис:", relative, unknown, external, browserTestPublicationWarning)
+			browserTestNoPrivateValues(t, response, "Не все изображения доступны:", "Изображение не связано с конспектом:", "Внешнее изображение отключено; загрузите файл в сервис:", relative, unknown, external)
 			images := browserTestElements(doc, "img")
 			if len(images) != 1 || browserTestAttr(images[0], "src") != tc.path+"/attachments/"+image.ID {
-				t.Error("reader diagnostics changed authorized image rendering")
+				t.Error("reader failed to render exactly the authorized image")
 			}
 			if !strings.Contains(browserTestText(doc), "![code example](images/code-example.png)") {
-				t.Error("image diagnostics consumed a literal code example")
+				t.Error("reader consumed a literal code example")
 			}
 		})
 	}
@@ -1467,14 +1373,14 @@ func TestBrowserImageWarningsOnlyAppearInManagement(t *testing.T) {
 		browserTestNoPrivateValues(t, page, "Не все изображения доступны:", relative, unknown, external)
 	}
 	if fetches.Load() != 0 {
-		t.Errorf("management/reader image diagnostics fetched external images %d times", fetches.Load())
+		t.Errorf("reading a note fetched external images %d times", fetches.Load())
 	}
 	if after := b.note(t, note.ID); !reflect.DeepEqual(after, note) {
-		t.Error("viewing image warnings changed note content or version")
+		t.Error("reading a note changed its content or version")
 	}
 	files, err := db.Attachments(t.Context(), note.ID)
 	if err != nil || !reflect.DeepEqual(files, []store.Attachment{image}) {
-		t.Fatalf("image diagnostics changed attachment metadata: %v", err)
+		t.Fatalf("reading a note changed attachment metadata: %v", err)
 	}
 }
 
@@ -1497,12 +1403,16 @@ func TestBrowserDeletesCleanUploadsAndPreserveOtherNotes(t *testing.T) {
 			note = b.note(t, note.ID)
 			path := "/notes/" + note.ID + "/attachments/" + image.ID + "/delete"
 			fields := url.Values{}
-			redirect := "/notes/" + note.ID + "/manage"
+			redirect := "/notes/" + note.ID
 			switch kind {
 			case "note":
 				redirect = "/projects/" + project.ID
 				path = "/notes/" + note.ID + "/delete"
-				fields.Set("version", b.version(t, note, "delete"))
+				page := b.request(t, "GET", redirect, nil, nil)
+				browserTestStatus(t, page, http.StatusOK)
+				form := browserTestForm(t, browserTestDocument(t, page), path)
+				fields.Set("version", browserTestInput(t, form, "version"))
+				fields.Set("csrf", browserTestInput(t, form, "csrf"))
 			case "project":
 				path = "/projects/" + project.ID + "/delete"
 				redirect = "/projects"

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -73,18 +74,18 @@ func TestLibraryPrimaryActions(t *testing.T) {
 			t.Fatal("project deletion must be collapsed and require confirmation")
 		}
 		summaries := browserTestElements(remove.Parent, "summary")
-		if len(summaries) != 1 || browserTestAttr(summaries[0], "aria-label") != "Удалить проект" {
-			t.Error("project trash icon has no accessible label")
+		if len(summaries) != 1 || browserTestAttr(summaries[0], "aria-label") != "Удалить проект" || len(browserTestElements(summaries[0], "svg")) != 1 {
+			t.Error("project delete must use an accessible inline SVG icon")
 		}
 	}
 }
 
-func TestLibraryRowsOfferSharingWithoutAnAccessBadge(t *testing.T) {
+func TestLibraryRowsOfferSharingAndConfirmedDeletion(t *testing.T) {
 	app := libraryTestApp(t)
 	project := store.Project{ID: "project", Name: "Математика"}
 	notes := []store.Note{
-		{ID: "private", ProjectID: project.ID, Title: "Ряды"},
-		{ID: "shared", ProjectID: project.ID, Title: "Графы", Shared: true},
+		{ID: "private", ProjectID: project.ID, Title: "Ряды", Version: 1},
+		{ID: "shared", ProjectID: project.ID, Title: "Графы", Version: 5, Shared: true},
 	}
 	for _, name := range []string{"project", "projects"} {
 		t.Run(name, func(t *testing.T) {
@@ -102,10 +103,21 @@ func TestLibraryRowsOfferSharingWithoutAnAccessBadge(t *testing.T) {
 			for i, note := range notes {
 				row := rows[i]
 				path := "/notes/" + note.ID
-				if !browserTestHasLink(row, path) || !browserTestHasLink(row, path+"/manage") {
-					t.Errorf("note %s lost its reading or settings link", note.ID)
+				if !browserTestHasLink(row, path) || browserTestHasLink(row, path+"/manage") {
+					t.Errorf("note %s should link to the reader, not the old settings", note.ID)
 				}
 				browserTestForm(t, row, path+"/share")
+				remove := browserTestForm(t, row, path+"/delete")
+				if remove.Parent.Data != "details" || hasLibraryAttr(remove.Parent, "open") || browserTestInput(t, remove, "csrf") != "test-csrf" || browserTestInput(t, remove, "confirm") != "DELETE" || browserTestInput(t, remove, "version") != strconv.FormatInt(note.Version, 10) {
+					t.Fatal("note deletion must be collapsed, confirmed and versioned")
+				}
+				summaries := browserTestElements(remove.Parent, "summary")
+				if len(summaries) != 1 || browserTestAttr(summaries[0], "aria-label") != "Удалить конспект: "+note.Title || len(browserTestElements(summaries[0], "svg")) != 1 {
+					t.Error("note delete must use an accessible inline SVG icon")
+				}
+				if len(browserTestElements(row, "form")) != 2 {
+					t.Error("note row exposes controls other than sharing and deleting")
+				}
 				if browserTestHasLink(row, path+"/share") || strings.Contains(browserTestText(row), "По ссылке") {
 					t.Errorf("note %s contains a persistent share badge or management link", note.ID)
 				}

@@ -9,49 +9,6 @@ import (
 	"conspect/internal/store"
 )
 
-// This template check needs no database or browser process.
-func TestCompactManagementTemplates(t *testing.T) {
-	app, err := New(nil, Config{BaseURL: "http://localhost", Secret: make([]byte, 32), DataDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	project := store.Project{ID: strings.Repeat("a", 32), Name: "Математика"}
-	note := store.Note{ID: strings.Repeat("b", 32), ProjectID: project.ID, Title: "Первый конспект", Version: 2, Shared: true}
-	other := store.Note{ID: strings.Repeat("c", 32), ProjectID: project.ID, Title: "Второй конспект", Version: 1}
-	render := func(name string, data pageData) *httptest.ResponseRecorder {
-		t.Helper()
-		response := httptest.NewRecorder()
-		app.page(response, httptest.NewRequest("GET", "/", nil), 200, name, data)
-		browserTestStatus(t, response, 200)
-		return response
-	}
-
-	projectPath := "/projects/" + project.ID
-	page := render("manage-note", pageData{Project: project, Projects: []store.Project{project}, Note: note, Entries: []noteEntry{{Note: note}}})
-	doc := browserTestDocument(t, page)
-	for _, action := range []string{"metadata", "replace", "attachments", "delete"} {
-		browserTestForm(t, doc, "/notes/"+note.ID+"/"+action)
-	}
-	if !browserTestHasLink(doc, projectPath) || browserTestHasLink(doc, projectPath+"/manage") {
-		t.Error("note settings should return to the main project list")
-	}
-	if strings.Contains(page.Body.String(), other.Title) {
-		t.Error("settings page contains another note")
-	}
-	if browserTestInput(t, browserTestForm(t, doc, "/notes/"+note.ID+"/replace"), "version") != "2" {
-		t.Error("note settings lost optimistic concurrency version")
-	}
-	browserTestReplacementPublicationWarning(t, browserTestManagementNote(t, doc, note.ID), note.ID, true)
-
-	page = render("manage-note", pageData{Project: project, Projects: []store.Project{project}, Note: other, Entries: []noteEntry{{Note: other}}})
-	doc = browserTestDocument(t, page)
-	browserTestReplacementPublicationWarning(t, browserTestManagementNote(t, doc, other.ID), other.ID, false)
-
-	response := httptest.NewRecorder()
-	app.Handler().ServeHTTP(response, httptest.NewRequest("GET", "/notes/"+note.ID+"/manage", nil))
-	browserTestRedirect(t, response, "/login")
-}
-
 func TestShareFallbackOnlyDisplaysTheCopyableURL(t *testing.T) {
 	app := libraryTestApp(t)
 	note := store.Note{ID: "note", ProjectID: "project", Title: "Ряды"}
@@ -73,8 +30,8 @@ func TestMinimalInterfaceCopy(t *testing.T) {
 	}
 	project := store.Project{ID: "project", Name: "Мой проект", Description: "Моё описание проекта"}
 	note := store.Note{ID: "note", ProjectID: project.ID, Title: "Мой конспект", Version: 1}
-	data := pageData{Project: project, Projects: []store.Project{project}, Note: note, Notes: []store.Note{note}, Entries: []noteEntry{{Note: note}}}
-	for _, name := range []string{"login", "projects", "project", "manage-note", "share", "keys"} {
+	data := pageData{Project: project, Projects: []store.Project{project}, Note: note, Notes: []store.Note{note}}
+	for _, name := range []string{"login", "projects", "project", "share", "keys"} {
 		t.Run(name, func(t *testing.T) {
 			page := httptest.NewRecorder()
 			app.page(page, httptest.NewRequest("GET", "/", nil), 200, name, data)

@@ -17,7 +17,6 @@ type pageData struct {
 	Projects                                                      []store.Project
 	Project                                                       store.Project
 	Notes                                                         []store.Note
-	Entries                                                       []noteEntry
 	Note                                                          store.Note
 	Keys                                                          []store.APIKey
 	ShowRevoked                                                   bool
@@ -25,17 +24,6 @@ type pageData struct {
 	OAuthScopes                                                   []string
 	// Content must come from the Markdown renderer, which sanitizes its output.
 	Content template.HTML
-}
-
-type noteEntry struct {
-	Note        store.Note
-	Attachments []imageEntry
-	Warnings    []string
-}
-
-type imageEntry struct {
-	Attachment store.Attachment
-	Markdown   string
 }
 
 func (a *App) page(w http.ResponseWriter, r *http.Request, status int, templateName string, data pageData) {
@@ -98,27 +86,38 @@ const pageTemplates = `
 {{if .Message}}<div class="notice" role="status">{{.Message}}</div>{{end}}
 {{end}}
 
+{{define "trash-icon"}}<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg>{{end}}
+
 {{define "note-list"}}
 <ul class="note-list">
   {{range .Notes}}
-  <li>
-    <a class="item-title" href="/notes/{{.ID}}">{{.Title}}</a>
-    <div class="note-row-meta">
+  <li class="note-row">
+    <div class="note-row-heading{{if $.Owner}} with-delete{{end}}">
+      <a class="item-title" href="/notes/{{.ID}}">{{.Title}}</a>
       {{template "library-date" .UpdatedAt}}
       {{if $.QuickShare}}
-      <div class="note-row-actions">
-        <form method="post" action="/notes/{{.ID}}/share" data-quick-share>
-          <input type="hidden" name="csrf" value="{{$.CSRF}}">
-          <input type="hidden" name="action" value="create">
-          <button type="submit" class="button-quiet share-button" title="Поделиться по ссылке" aria-label="Поделиться по ссылке: {{.Title}}"><span aria-hidden="true">🔗</span></button>
-        </form>
-        <a class="note-settings-link" href="/notes/{{.ID}}/manage" title="Настройки конспекта" aria-label="Настройки конспекта: {{.Title}}"><span aria-hidden="true">⚙︎</span></a>
-      </div>
+      <form class="note-share" method="post" action="/notes/{{.ID}}/share" data-quick-share>
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="action" value="create">
+        <button type="submit" class="button-quiet share-button" title="Поделиться по ссылке" aria-label="Поделиться по ссылке: {{.Title}}"><span aria-hidden="true">🔗</span></button>
+      </form>
       {{end}}
     </div>
     {{if $.QuickShare}}
-    <span class="share-status" data-share-status role="status"></span>
+    <p class="share-status" data-share-status role="status"></p>
     <input class="share-url mono" data-share-url type="text" aria-label="Публичная ссылка: {{.Title}}" readonly hidden spellcheck="false" autocomplete="off">
+    {{end}}
+    {{if $.Owner}}
+    <details class="note-delete" name="delete-note">
+      <summary class="delete-toggle" title="Удалить конспект" aria-label="Удалить конспект: {{.Title}}">{{template "trash-icon"}}</summary>
+      <form class="stack delete-form" method="post" action="/notes/{{.ID}}/delete">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="version" value="{{.Version}}">
+        <p>Конспект «{{.Title}}» и его вложения будут удалены. Если есть публичная ссылка, она перестанет работать.</p>
+        <label class="check"><input type="checkbox" name="confirm" value="DELETE" required> <span>Подтверждаю удаление.</span></label>
+        <div><button class="button-danger" type="submit">Удалить конспект</button></div>
+      </form>
+    </details>
     {{end}}
   </li>
   {{else}}
@@ -229,8 +228,8 @@ const pageTemplates = `
       <h1>{{.Project.Name}}</h1>
       {{if .Project.Description}}<p class="description library-description">{{.Project.Description}}</p>{{end}}
       <details class="project-delete">
-        <summary title="Удалить проект" aria-label="Удалить проект"><span aria-hidden="true">🗑︎</span></summary>
-        <form class="stack project-delete-form" method="post" action="/projects/{{.Project.ID}}/delete">
+        <summary class="delete-toggle" title="Удалить проект" aria-label="Удалить проект">{{template "trash-icon"}}</summary>
+        <form class="stack delete-form" method="post" action="/projects/{{.Project.ID}}/delete">
           <input type="hidden" name="csrf" value="{{.CSRF}}">
           <p>Проект, его конспекты и вложения будут удалены. Публичные ссылки перестанут работать. Отменить удаление нельзя.</p>
           <label class="check"><input type="checkbox" name="confirm" value="DELETE" required> <span>Подтверждаю удаление проекта и всех его материалов.</span></label>
@@ -261,100 +260,6 @@ const pageTemplates = `
 </body>
 </html>{{end}}
 
-
-{{define "manage-note"}}{{template "head" .}}
-<body>
-{{template "header" .}}
-<main class="shell settings-shell" id="main">
-  <p class="breadcrumbs"><a href="/projects/{{.Project.ID}}">← {{.Project.Name}}</a></p>
-  <div class="page-heading settings-heading">
-    <p class="page-kicker">Настройки конспекта</p>
-    <h1>{{.Note.Title}}</h1>
-    <a class="text-action" href="/notes/{{.Note.ID}}">Открыть читалку →</a>
-  </div>
-  {{template "notices" .}}
-    {{range .Entries}}
-    {{$note := .Note}}
-    <div class="note-management">
-
-      {{if .Warnings}}<div class="notice notice-error" role="status"><strong>Не все изображения доступны:</strong><ul>{{range .Warnings}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
-      <section class="settings-row" aria-labelledby="metadata-{{$note.ID}}">
-          <h2 id="metadata-{{$note.ID}}">Название и проект</h2>
-          <form class="stack" method="post" action="/notes/{{$note.ID}}/metadata">
-            <input type="hidden" name="csrf" value="{{$.CSRF}}">
-            <input type="hidden" name="version" value="{{$note.Version}}">
-            <div>
-              <label for="title-{{$note.ID}}">Заголовок</label>
-              <input id="title-{{$note.ID}}" name="title" type="text" value="{{$note.Title}}" maxlength="300" required>
-            </div>
-            <div>
-              <label for="project-{{$note.ID}}">Проект</label>
-              <select id="project-{{$note.ID}}" name="project_id" required>
-                {{range $.Projects}}<option value="{{.ID}}"{{if eq .ID $note.ProjectID}} selected{{end}}>{{.Name}}</option>{{else}}<option value="{{$note.ProjectID}}">{{$.Project.Name}}</option>{{end}}
-              </select>
-            </div>
-            <div><button type="submit">Сохранить сведения</button></div>
-          </form>
-      </section>
-      <section class="settings-row" aria-labelledby="replace-{{$note.ID}}">
-        <div>
-          <h2 id="replace-{{$note.ID}}">Исходный Markdown</h2>
-          <p class="item-meta">Версия {{$note.Version}} · {{template "library-date" $note.UpdatedAt}}</p>
-          {{if $note.Shared}}<p class="hint">Замена файла и правки через MCP сразу станут видны читателям.</p>{{end}}
-        </div>
-          <form class="stack" method="post" action="/notes/{{$note.ID}}/replace" enctype="multipart/form-data">
-            <input type="hidden" name="csrf" value="{{$.CSRF}}">
-            <input type="hidden" name="version" value="{{$note.Version}}">
-            <div>
-              <label for="replace-file-{{$note.ID}}">Новый файл .md в UTF-8</label>
-              <input id="replace-file-{{$note.ID}}" name="file" type="file" accept=".md,text/markdown" aria-describedby="replace-hint-{{$note.ID}}" required>
-              <p class="hint" id="replace-hint-{{$note.ID}}">Адрес, вложения и ссылка доступа сохраняются.</p>
-            </div>
-            <div><button class="button-quiet" type="submit">Заменить файл</button></div>
-          </form>
-      </section>
-      <details class="settings-divider disclosure"{{if .Warnings}} open{{end}}>
-        <summary id="images-{{$note.ID}}">Изображения · {{len .Attachments}}</summary>
-        <p id="image-hint-{{$note.ID}}" class="muted">Загрузка не вставляет изображение в текст. Добавьте Markdown-фрагмент отдельно.</p>
-        <form class="stack" method="post" action="/notes/{{$note.ID}}/attachments" enctype="multipart/form-data">
-          <input type="hidden" name="csrf" value="{{$.CSRF}}">
-          <div>
-            <label for="image-file-{{$note.ID}}">Изображение PNG, JPEG или WebP</label>
-            <input id="image-file-{{$note.ID}}" name="file" type="file" accept="image/png,image/jpeg,image/webp" aria-describedby="image-hint-{{$note.ID}}" required>
-          </div>
-          <div><button type="submit">Загрузить изображение</button></div>
-        </form>
-        <ul class="attachment-list">
-          {{range .Attachments}}
-          <li class="attachment">
-            <p><a href="/notes/{{$note.ID}}/attachments/{{.Attachment.ID}}">{{.Attachment.Name}}</a> <span class="item-meta">{{.Attachment.Size}} байт</span></p>
-            <label for="markdown-{{.Attachment.ID}}">Markdown-фрагмент для исходника</label>
-            <input id="markdown-{{.Attachment.ID}}" class="mono" type="text" value="{{.Markdown}}" readonly spellcheck="false" autocomplete="off">
-            <form class="stack compact-form" method="post" action="/notes/{{$note.ID}}/attachments/{{.Attachment.ID}}/delete">
-              <input type="hidden" name="csrf" value="{{$.CSRF}}">
-              <label class="check"><input type="checkbox" name="confirm" value="DELETE" required> <span>Подтверждаю удаление изображения. Ссылки на него в тексте перестанут работать.</span></label>
-              <div><button class="button-danger" type="submit">Удалить изображение</button></div>
-            </form>
-          </li>
-          {{else}}
-          <li class="muted">Изображений пока нет.</li>
-          {{end}}
-        </ul>
-      </details>
-      <details class="settings-divider disclosure">
-        <summary id="delete-note-{{$note.ID}}">Удалить конспект</summary>
-        <form class="stack" method="post" action="/notes/{{$note.ID}}/delete">
-          <input type="hidden" name="csrf" value="{{$.CSRF}}">
-          <input type="hidden" name="version" value="{{$note.Version}}">
-          <label class="check"><input type="checkbox" name="confirm" value="DELETE" required> <span>Подтверждаю удаление этого конспекта со всеми вложениями. Ссылка доступа перестанет работать.</span></label>
-          <div><button class="button-danger" type="submit">Удалить конспект</button></div>
-        </form>
-      </details>
-    </div>
-    {{end}}
-</main>
-</body>
-</html>{{end}}
 
 {{define "reader"}}<!doctype html>
 <html lang="ru">

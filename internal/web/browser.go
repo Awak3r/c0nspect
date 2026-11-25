@@ -82,31 +82,7 @@ func (a *App) manageProject(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/projects/"+url.PathEscape(r.PathValue("projectID")), http.StatusSeeOther)
 }
 func (a *App) manageNote(w http.ResponseWriter, r *http.Request) {
-	n, err := a.db.Note(r.Context(), r.PathValue("noteID"))
-	if err != nil {
-		a.fail(w, r, err)
-		return
-	}
-	p, err := a.db.Project(r.Context(), n.ProjectID)
-	if err != nil {
-		a.fail(w, r, err)
-		return
-	}
-	projects, err := a.db.Projects(r.Context())
-	if err != nil {
-		a.fail(w, r, err)
-		return
-	}
-	files, err := a.db.Attachments(r.Context(), n.ID)
-	if err != nil {
-		a.fail(w, r, err)
-		return
-	}
-	entry := noteEntry{Note: n, Warnings: imageWarnings(n.Markdown, files)}
-	for _, f := range files {
-		entry.Attachments = append(entry.Attachments, imageEntry{Attachment: f, Markdown: imageMarkdown(f)})
-	}
-	a.page(w, r, 200, "manage-note", pageData{Title: "Настройки · " + n.Title, Note: n, Project: p, Projects: projects, Entries: []noteEntry{entry}})
+	http.Redirect(w, r, "/notes/"+url.PathEscape(r.PathValue("noteID")), http.StatusSeeOther)
 }
 func (a *App) editProject(w http.ResponseWriter, r *http.Request) {
 	name, description, err := projectFields(r)
@@ -235,7 +211,7 @@ func (a *App) replaceNote(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/notes/"+n.ID+"/manage", 303)
+	http.Redirect(w, r, "/notes/"+n.ID, http.StatusSeeOther)
 }
 func (a *App) noteMetadata(w http.ResponseWriter, r *http.Request) {
 	version, err := formVersion(r)
@@ -253,7 +229,7 @@ func (a *App) noteMetadata(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/notes/"+n.ID+"/manage", 303)
+	http.Redirect(w, r, "/notes/"+n.ID, http.StatusSeeOther)
 }
 func (a *App) deleteNote(w http.ResponseWriter, r *http.Request) {
 	if err := confirmed(r); err != nil {
@@ -288,7 +264,7 @@ func (a *App) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/notes/"+n.ID+"/manage", 303)
+	http.Redirect(w, r, "/notes/"+n.ID, http.StatusSeeOther)
 }
 func (a *App) deleteAttachment(w http.ResponseWriter, r *http.Request) {
 	if err := confirmed(r); err != nil {
@@ -306,7 +282,7 @@ func (a *App) deleteAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.removeFiles([]store.Attachment{f})
-	http.Redirect(w, r, "/notes/"+n.ID+"/manage", 303)
+	http.Redirect(w, r, "/notes/"+n.ID, http.StatusSeeOther)
 }
 func (a *App) readNote(w http.ResponseWriter, r *http.Request) {
 	n, err := a.db.Note(r.Context(), r.PathValue("noteID"))
