@@ -914,7 +914,7 @@ func TestBrowserRootSearchSortsByTitle(t *testing.T) {
 			doc := browserTestDocument(t, response)
 			var got []string
 			for _, link := range browserTestElements(doc, "a") {
-				if id, ok := strings.CutPrefix(browserTestAttr(link, "href"), "/notes/"); ok {
+				if id, ok := strings.CutPrefix(browserTestAttr(link, "href"), "/notes/"); ok && !strings.Contains(id, "/") {
 					got = append(got, id)
 				}
 			}
