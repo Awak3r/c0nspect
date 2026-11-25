@@ -52,28 +52,17 @@ func TestCompactManagementTemplates(t *testing.T) {
 	browserTestRedirect(t, response, "/login")
 }
 
-func TestSharePageKeepsCurrentURLOutsideTheActionsDisclosure(t *testing.T) {
+func TestShareFallbackOnlyDisplaysTheCopyableURL(t *testing.T) {
 	app := libraryTestApp(t)
 	note := store.Note{ID: "note", ProjectID: "project", Title: "Ряды"}
-	path := "/notes/" + note.ID + "/share"
-	page := libraryTestPage(t, app, "share", pageData{Note: note, ShareActive: true, ShareURL: "https://notes.example.test/s/test"}, true)
+	page := libraryTestPage(t, app, "share", pageData{Note: note, ShareURL: "https://notes.example.test/s/test"}, true)
 	input := browserTestInputID(page, "share-url")
 	if input == nil || !hasLibraryAttr(input, "readonly") || !browserTestHasLink(page, "/projects/project") || browserTestHasLink(page, "/notes/note/manage") {
 		t.Fatal("share page lost the read-only link or back navigation")
 	}
-	details := browserTestElements(page, "details")
-	if len(details) != 1 || hasLibraryAttr(details[0], "open") || browserTestInputID(details[0], "share-url") != nil {
-		t.Fatal("only sharing actions should be collapsed")
-	}
-	actions := map[string]bool{}
-	for _, form := range browserTestElements(details[0], "form") {
-		if browserTestAttr(form, "action") != path || browserTestAttr(form, "method") != "post" || browserTestInput(t, form, "csrf") != "test-csrf" {
-			t.Fatal("sharing action lost its endpoint or CSRF token")
-		}
-		actions[browserTestInput(t, form, "action")] = true
-	}
-	if len(actions) != 2 || !actions["rotate"] || !actions["revoke"] {
-		t.Fatalf("unexpected actions: %v", actions)
+	main := browserTestElements(page, "main")[0]
+	if browserTestAttr(input, "value") != "https://notes.example.test/s/test" || len(browserTestElements(main, "form")) != 0 || len(browserTestElements(main, "details")) != 0 {
+		t.Error("manual copy fallback must only show the current link, without management controls")
 	}
 }
 

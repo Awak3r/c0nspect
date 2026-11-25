@@ -12,7 +12,7 @@ import (
 type pageData struct {
 	Title, CSRF, Error, Message, Query, Sort, ShareURL, KeySecret string
 	Owner, DocumentHasTitle                                       bool
-	ShareActive, QuickShare                                       bool
+	QuickShare                                                    bool
 	CurrentPage                                                   string
 	Projects                                                      []store.Project
 	Project                                                       store.Project
@@ -102,10 +102,7 @@ const pageTemplates = `
 <ul class="note-list">
   {{range .Notes}}
   <li>
-    <div class="note-row-main">
-      <a class="item-title" href="/notes/{{.ID}}">{{.Title}}</a>
-      {{if $.Owner}}<a class="note-share-mark" href="/notes/{{.ID}}/share" title="Управлять ссылкой" aria-label="Управлять ссылкой: {{.Title}}" data-share-mark{{if not .Shared}} hidden{{end}}>По ссылке</a>{{end}}
-    </div>
+    <a class="item-title" href="/notes/{{.ID}}">{{.Title}}</a>
     <div class="note-row-meta">
       {{template "library-date" .UpdatedAt}}
       {{if $.QuickShare}}
@@ -393,39 +390,19 @@ const pageTemplates = `
 <main class="shell narrow" id="main">
   <p class="breadcrumbs"><a href="/projects/{{.Note.ProjectID}}">← К проекту</a></p>
   <div class="page-heading settings-heading">
-    <h1>Доступ по ссылке</h1>
+    <h1>Публичная ссылка</h1>
     <a class="text-action" href="/notes/{{.Note.ID}}">{{.Note.Title}} →</a>
   </div>
   {{template "notices" .}}
-  <section class="settings-divider" aria-labelledby="share-title">
-    <h2 id="share-title">{{if .ShareActive}}Ссылка активна{{else}}Доступ отключён{{end}}</h2>
-    <p class="muted">По ссылке можно читать этот конспект и смотреть его изображения. Другие материалы останутся закрыты.</p>
-    {{if .ShareActive}}
-    {{if .ShareURL}}
-    <label for="share-url">Текущая ссылка</label>
+  {{if .ShareURL}}
+  <div class="settings-divider">
+    <p class="muted">По ссылке можно читать этот конспект и смотреть его изображения.</p>
+    <label for="share-url">Ссылка для копирования</label>
     <input id="share-url" class="mono" type="text" value="{{.ShareURL}}" readonly spellcheck="false" autocomplete="off">
-
-    {{end}}
-    <details class="settings-divider disclosure section">
-      <summary>Управление ссылкой</summary>
-      <p class="hint">При перевыпуске или отзыве старая ссылка сразу перестанет работать. Конспект не удаляется.</p>
-      <div class="actions">
-        <form method="post" action="/notes/{{.Note.ID}}/share">
-          <input type="hidden" name="csrf" value="{{.CSRF}}">
-          <input type="hidden" name="action" value="rotate">
-          <button class="button-quiet" type="submit">Перевыпустить ссылку</button>
-        </form>
-        <form method="post" action="/notes/{{.Note.ID}}/share">
-          <input type="hidden" name="csrf" value="{{.CSRF}}">
-          <input type="hidden" name="action" value="revoke">
-          <button class="button-danger" type="submit">Отозвать ссылку</button>
-        </form>
-      </div>
-    </details>
-    {{else}}
-    <p>Чтобы создать ссылку, нажмите «Поделиться по ссылке» рядом с конспектом <a href="/projects/{{.Note.ProjectID}}">в списке проекта</a>.</p>
-    {{end}}
-  </section>
+  </div>
+  {{else if not .Message}}
+  <p>Чтобы создать ссылку, нажмите 🔗 рядом с конспектом в списке проекта.</p>
+  {{end}}
 </main>
 </body>
 </html>{{end}}

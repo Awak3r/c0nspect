@@ -143,7 +143,7 @@ func (a *App) routes() {
 	m.HandleFunc("POST /notes/{noteID}/attachments/{attachmentID}/delete", a.owner(a.deleteAttachment))
 	m.HandleFunc("GET /notes/{noteID}/attachments/{attachmentID}", a.owner(a.ownerAttachment))
 	m.HandleFunc("GET /notes/{noteID}/share", a.owner(a.sharePage))
-	m.HandleFunc("POST /notes/{noteID}/share", a.owner(a.changeShare))
+	m.HandleFunc("POST /notes/{noteID}/share", a.owner(a.ensureShare))
 	m.HandleFunc("GET /s/{token}", a.sharedNote)
 	m.HandleFunc("GET /s/{token}/attachments/{attachmentID}", a.sharedAttachment)
 	m.HandleFunc("GET /settings/api-keys", a.owner(a.keysPage))

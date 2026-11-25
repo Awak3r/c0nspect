@@ -18,7 +18,7 @@
   for (const form of document.querySelectorAll('form[data-quick-share]')) {
     const row = form.closest('li');
     const status = row.querySelector('[data-share-status]');
-    const mark = row.querySelector('[data-share-mark]');
+
     const manual = row.querySelector('[data-share-url]');
     const button = form.querySelector('button');
     let pending = false;
@@ -43,7 +43,7 @@
           redirect: 'error',
         }).then(async response => {
           if (response.status === 409) {
-            failureMessage = 'Прежнюю ссылку нельзя скопировать. Перевыпустите её через «По ссылке».';
+            failureMessage = 'Прежняя ссылка всё ещё действует, но её нельзя скопировать после смены секрета сервера.';
           }
           if (!response.ok) throw new Error();
           const { url } = await response.json();
@@ -53,7 +53,7 @@
 
         const copy = startCopy(request);
         const url = await request;
-        if (mark) mark.hidden = false;
+
         if (await copy) {
           status.textContent = 'Ссылка скопирована';
         } else {

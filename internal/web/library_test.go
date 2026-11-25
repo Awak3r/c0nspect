@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,7 +79,7 @@ func TestLibraryPrimaryActions(t *testing.T) {
 	}
 }
 
-func TestLibraryRowsLinkToNoteSettingsAndMarkOnlySharedNotes(t *testing.T) {
+func TestLibraryRowsOfferSharingWithoutAnAccessBadge(t *testing.T) {
 	app := libraryTestApp(t)
 	project := store.Project{ID: "project", Name: "Математика"}
 	notes := []store.Note{
@@ -105,15 +106,8 @@ func TestLibraryRowsLinkToNoteSettingsAndMarkOnlySharedNotes(t *testing.T) {
 					t.Errorf("note %s lost its reading or settings link", note.ID)
 				}
 				browserTestForm(t, row, path+"/share")
-				var mark *html.Node
-				for _, link := range browserTestElements(row, "a") {
-					if hasLibraryAttr(link, "data-share-mark") {
-						mark = link
-						break
-					}
-				}
-				if mark == nil || hasLibraryAttr(mark, "hidden") == note.Shared || browserTestAttr(mark, "href") != path+"/share" {
-					t.Errorf("note %s has the wrong share indicator or management link", note.ID)
+				if browserTestHasLink(row, path+"/share") || strings.Contains(browserTestText(row), "По ссылке") {
+					t.Errorf("note %s contains a persistent share badge or management link", note.ID)
 				}
 			}
 		})

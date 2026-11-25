@@ -252,33 +252,6 @@ func browserTestReplacementPublicationWarning(t *testing.T, entry *html.Node, no
 	}
 }
 
-func browserTestShareActions(t *testing.T, doc *html.Node, noteID, csrf string) []string {
-	t.Helper()
-	var actions []string
-	for _, form := range browserTestElements(doc, "form") {
-		if browserTestAttr(form, "action") != "/notes/"+noteID+"/share" {
-			continue
-		}
-		if browserTestAttr(form, "method") != "post" || browserTestInput(t, form, "csrf") != csrf {
-			t.Error("share control has incorrect method or session CSRF token")
-		}
-		buttons := browserTestElements(form, "button")
-		if len(buttons) != 1 || browserTestAttr(buttons[0], "type") != "submit" || strings.TrimSpace(browserTestText(buttons[0])) == "" {
-			t.Error("share control omitted its submit button")
-		}
-		browserTestWalk(form, func(node *html.Node) {
-			for _, attr := range node.Attr {
-				if attr.Key == "hidden" || attr.Key == "disabled" {
-					t.Error("share control is hidden or disabled")
-				}
-			}
-		})
-		actions = append(actions, browserTestInput(t, form, "action"))
-	}
-	slices.Sort(actions)
-	return actions
-}
-
 func browserTestNoPrivateValues(t *testing.T, response *httptest.ResponseRecorder, values ...string) {
 	t.Helper()
 	for _, value := range values {
@@ -1100,7 +1073,7 @@ func TestBrowserReadersSharingAndAttachmentAuthorization(t *testing.T) {
 	admin := b.request(t, "GET", "/notes/"+note.ID+"/share", nil, nil)
 	browserTestStatus(t, admin, 200)
 	adminDoc := browserTestDocument(t, admin)
-	if browserTestInputID(adminDoc, "share-url") != nil || len(browserTestShareActions(t, adminDoc, note.ID, b.csrf)) != 0 || !browserTestHasLink(adminDoc, "/projects/"+project.ID) {
+	if browserTestInputID(adminDoc, "share-url") != nil || !browserTestHasLink(adminDoc, "/projects/"+project.ID) {
 		t.Error("unshared note settings should direct the owner to the project list to create a link")
 	}
 	browserTestRedirect(t, anonymous.request(t, "GET", "/notes/"+note.ID+"/share", nil, nil), "/login")
@@ -1111,20 +1084,7 @@ func TestBrowserReadersSharingAndAttachmentAuthorization(t *testing.T) {
 	if b.shareURL(t, note.ID) != sharePath {
 		t.Error("creating an existing share rotated it unexpectedly")
 	}
-	admin = b.request(t, "GET", "/notes/"+note.ID+"/share", nil, nil)
-	adminDoc = browserTestDocument(t, admin)
-	var actions []string
-	for _, form := range browserTestElements(adminDoc, "form") {
-		if browserTestAttr(form, "action") == "/notes/"+note.ID+"/share" {
-			actions = append(actions, browserTestInput(t, form, "action"))
-			if browserTestInput(t, form, "csrf") != b.csrf {
-				t.Error("share administration form omitted session CSRF")
-			}
-		}
-	}
-	if !slices.Contains(actions, "rotate") || !slices.Contains(actions, "revoke") {
-		t.Error("share controls are missing from the separate administration page")
-	}
+
 	activeShare, err := db.ActiveShare(t.Context(), note.ID)
 	if err != nil || activeShare.TokenHash != tokenHash(strings.TrimPrefix(sharePath, "/s/")) {
 		t.Fatalf("share URL does not match stored token hash: %v", err)
@@ -1267,33 +1227,27 @@ func TestBrowserReadersSharingAndAttachmentAuthorization(t *testing.T) {
 		t.Error("authorized range request returned wrong image bytes")
 	}
 
-	browserTestStatus(t, b.form(t, "/notes/"+note.ID+"/share", url.Values{"action": {"rotate"}, "csrf": {"wrong"}}), 403)
+	for _, action := range []string{"rotate", "revoke"} {
+		browserTestStatus(t, b.form(t, "/notes/"+note.ID+"/share", url.Values{"action": {action}}), http.StatusUnprocessableEntity)
+	}
 	if b.shareURL(t, note.ID) != sharePath {
-		t.Fatal("CSRF-rejected request rotated the share")
+		t.Fatal("unsupported actions changed the active share")
 	}
-	b.changeShare(t, note.ID, "rotate")
-	rotatedPath := b.shareURL(t, note.ID)
-	if rotatedPath == sharePath {
-		t.Fatal("rotation reused the old share token")
+	// Historical revoked tokens must still be rejected after removing the browser action.
+	if err := db.RevokeShare(t.Context(), note.ID); err != nil {
+		t.Fatal(err)
 	}
-	for _, client := range []*browserTestClient{anonymous, b} {
-		for _, suffix := range []string{"", "/attachments/" + image.ID} {
-			browserTestStatus(t, client.request(t, "GET", sharePath+suffix, nil, nil), 404)
-			browserTestStatus(t, client.request(t, "GET", rotatedPath+suffix, nil, nil), 200)
-		}
-	}
-	b.changeShare(t, note.ID, "revoke")
 	unknown := anonymous.request(t, "GET", "/s/unknown-token", nil, nil)
 	browserTestStatus(t, unknown, 404)
 	for _, client := range []*browserTestClient{anonymous, b} {
 		for _, suffix := range []string{"", "/attachments/" + image.ID} {
-			response := client.request(t, "GET", rotatedPath+suffix, nil, map[string]string{"Range": "bytes=0-7", "If-Modified-Since": time.Now().Add(time.Hour).UTC().Format(http.TimeFormat)})
+			response := client.request(t, "GET", sharePath+suffix, nil, map[string]string{"Range": "bytes=0-7", "If-Modified-Since": time.Now().Add(time.Hour).UTC().Format(http.TimeFormat)})
 			browserTestStatus(t, response, 404)
 			browserTestSecurity(t, response, "no-referrer")
 			if !bytes.Equal(response.Body.Bytes(), unknown.Body.Bytes()) {
 				t.Error("revoked/unknown shares return distinguishable error pages or expose owner controls")
 			}
-			browserTestStatus(t, client.request(t, "HEAD", rotatedPath+suffix, nil, nil), 404)
+			browserTestStatus(t, client.request(t, "HEAD", sharePath+suffix, nil, nil), 404)
 		}
 	}
 	page := b.request(t, "GET", "/notes/"+note.ID+"/share", nil, nil)
@@ -1303,7 +1257,7 @@ func TestBrowserReadersSharingAndAttachmentAuthorization(t *testing.T) {
 	}
 	b.changeShare(t, note.ID, "create")
 	recreatedPath := b.shareURL(t, note.ID)
-	if recreatedPath == sharePath || recreatedPath == rotatedPath {
+	if recreatedPath == sharePath {
 		t.Error("recreating revoked access reused a token")
 	}
 	browserTestStatus(t, anonymous.request(t, "GET", recreatedPath, nil, nil), 200)
@@ -1382,108 +1336,49 @@ func TestBrowserQuickShareCreatesAndReusesLink(t *testing.T) {
 	}
 }
 
-func TestBrowserShareControlsRecoverAfterAppSecretChange(t *testing.T) {
-	for _, action := range []string{"revoke", "rotate"} {
-		t.Run(action, func(t *testing.T) {
-			app, db := newTestApp(t)
-			owner := browserTestOwner(t, app, db)
-			project := owner.createProject(t, "Secret rotation recovery", "")
-			note := owner.importNotes(t, project.ID, browserTestMarkdown("shared.md", "# Existing shared note"))[0]
-			image := owner.uploadImage(t, note, "existing.png")
-			owner.changeShare(t, note.ID, "create")
-			oldPath := owner.shareURL(t, note.ID)
-			note = owner.note(t, note.ID)
-			oldShare, err := db.ActiveShare(t.Context(), note.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
+func TestBrowserExistingShareStillWorksAfterAppSecretChange(t *testing.T) {
+	app, db := newTestApp(t)
+	owner := browserTestOwner(t, app, db)
+	project := owner.createProject(t, "Secret rotation", "")
+	note := owner.importNotes(t, project.ID, browserTestMarkdown("shared.md", "# Existing shared note"))[0]
+	image := owner.uploadImage(t, note, "existing.png")
+	owner.changeShare(t, note.ID, "create")
+	oldPath := owner.shareURL(t, note.ID)
+	oldShare, err := db.ActiveShare(t.Context(), note.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-			cfg := app.cfg
-			cfg.Secret = bytes.Repeat([]byte{0x72}, 32)
-			changedApp, err := New(db, cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			// A restart keeps database sessions; changing APP_SECRET must not
-			// strand an authenticated owner behind an unrecoverable share page.
-			changed := &browserTestClient{app: changedApp, db: db, cookie: owner.cookie, csrf: owner.csrf}
-			public := &browserTestClient{app: changedApp, db: db}
-			shareAdmin := "/notes/" + note.ID + "/share"
-			page := changed.request(t, "GET", shareAdmin, nil, nil)
-			browserTestStatus(t, page, 200)
-			browserTestSecurity(t, page)
-			doc := browserTestDocument(t, page)
-			browserTestReferrerMeta(t, doc, "same-origin")
-			if browserTestInputID(doc, "share-url") != nil {
-				t.Error("changed APP_SECRET exposed an unusable reconstructed share URL")
-			}
-			text := browserTestText(doc)
-			if !strings.Contains(text, "APP_SECRET изменён") || !strings.Contains(text, "прежняя ссылка всё ещё действует") {
-				t.Error("changed-secret share page omitted the still-active-share warning")
-			}
-			if got := browserTestShareActions(t, doc, note.ID, changed.csrf); !reflect.DeepEqual(got, []string{"revoke", "rotate"}) {
-				t.Errorf("changed-secret share actions = %v, want revoke and rotate without create", got)
-			}
-			reconstructed := "/s/" + changedApp.shareToken(oldShare.ID)
-			browserTestNoPrivateValues(t, page, oldPath, reconstructed, oldShare.TokenHash)
-			copyResponse := browserTestQuickShare(t, changed, shareAdmin, changedApp.cfg.BaseURL, changed.csrf)
-			browserTestStatus(t, copyResponse, http.StatusConflict)
-			browserTestNoPrivateValues(t, copyResponse, oldPath, reconstructed, oldShare.TokenHash)
-			browserTestStatus(t, public.request(t, "GET", reconstructed, nil, nil), 404)
-			current, err := db.ActiveShare(t.Context(), note.ID)
-			if err != nil || !reflect.DeepEqual(current, oldShare) || !changed.note(t, note.ID).Shared {
-				t.Fatalf("viewing a changed-secret share page invalidated the old share: %v", err)
-			}
-			for _, client := range []*browserTestClient{public, changed} {
-				browserTestReadOnly(t, client.request(t, "GET", oldPath, nil, nil), true)
-				browserTestStatus(t, client.request(t, "GET", oldPath+"/attachments/"+image.ID, nil, nil), 200)
-			}
-
-			changed.changeShare(t, note.ID, action)
-			for _, client := range []*browserTestClient{public, changed, owner} {
-				for _, suffix := range []string{"", "/attachments/" + image.ID} {
-					response := client.request(t, "GET", oldPath+suffix, nil, nil)
-					browserTestStatus(t, response, 404)
-					browserTestSecurity(t, response, "no-referrer")
-				}
-			}
-			if action == "revoke" {
-				page := changed.request(t, "GET", shareAdmin, nil, nil)
-				browserTestStatus(t, page, 200)
-				doc := browserTestDocument(t, page)
-				if browserTestInputID(doc, "share-url") != nil || strings.Contains(browserTestText(doc), "APP_SECRET изменён") {
-					t.Error("revocation left an active URL or changed-secret warning")
-				}
-				if got := browserTestShareActions(t, doc, note.ID, changed.csrf); len(got) != 0 || !browserTestHasLink(doc, "/projects/"+project.ID) {
-					t.Errorf("revoked-share settings should point to the project list without exposing creation forms, got actions %v", got)
-				}
-				if _, err := db.ActiveShare(t.Context(), note.ID); !errors.Is(err, store.ErrNotFound) || changed.note(t, note.ID).Shared {
-					t.Fatalf("changed-secret revocation left an active share: %v", err)
-				}
-				changed.changeShare(t, note.ID, "create")
-			}
-			newPath := changed.shareURL(t, note.ID)
-			if newPath == oldPath || newPath == reconstructed {
-				t.Error("share recovery reused an old or incorrectly reconstructed token")
-			}
-			page = changed.request(t, "GET", shareAdmin, nil, nil)
-			browserTestStatus(t, page, 200)
-			if strings.Contains(browserTestText(browserTestDocument(t, page)), "APP_SECRET изменён") {
-				t.Error("successful share recovery did not clear the warning")
-			}
-			for _, client := range []*browserTestClient{public, changed, owner} {
-				browserTestReadOnly(t, client.request(t, "GET", newPath, nil, nil), true)
-				browserTestStatus(t, client.request(t, "GET", newPath+"/attachments/"+image.ID, nil, nil), 200)
-				browserTestStatus(t, client.request(t, "GET", oldPath, nil, nil), 404)
-			}
-			if after := changed.note(t, note.ID); !reflect.DeepEqual(after, note) {
-				t.Error("changed-secret share recovery changed the note or its version")
-			}
-			storedImage, err := db.Attachment(t.Context(), note.ID, image.ID)
-			if err != nil || !reflect.DeepEqual(storedImage, image) {
-				t.Fatalf("share recovery changed attachment metadata: %v", err)
-			}
-		})
+	cfg := app.cfg
+	cfg.Secret = bytes.Repeat([]byte{0x72}, 32)
+	changedApp, err := New(db, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := &browserTestClient{app: changedApp, db: db, cookie: owner.cookie, csrf: owner.csrf}
+	public := &browserTestClient{app: changedApp, db: db}
+	sharePath := "/notes/" + note.ID + "/share"
+	page := changed.request(t, "GET", sharePath, nil, nil)
+	browserTestStatus(t, page, 200)
+	browserTestSecurity(t, page)
+	doc := browserTestDocument(t, page)
+	if browserTestInputID(doc, "share-url") != nil || !strings.Contains(browserTestText(doc), "прежняя ссылка всё ещё действует") {
+		t.Error("changed-secret fallback must warn instead of showing an unusable URL")
+	}
+	reconstructed := "/s/" + changedApp.shareToken(oldShare.ID)
+	browserTestNoPrivateValues(t, page, oldPath, reconstructed, oldShare.TokenHash)
+	copyResponse := browserTestQuickShare(t, changed, sharePath, changedApp.cfg.BaseURL, changed.csrf)
+	browserTestStatus(t, copyResponse, http.StatusConflict)
+	browserTestNoPrivateValues(t, copyResponse, oldPath, reconstructed, oldShare.TokenHash)
+	browserTestStatus(t, public.request(t, "GET", reconstructed, nil, nil), 404)
+	current, err := db.ActiveShare(t.Context(), note.ID)
+	if err != nil || !reflect.DeepEqual(current, oldShare) {
+		t.Fatalf("copying with a changed secret modified the active share: %v", err)
+	}
+	browserTestReadOnly(t, public.request(t, "GET", oldPath, nil, nil), true)
+	browserTestStatus(t, public.request(t, "GET", oldPath+"/attachments/"+image.ID, nil, nil), 200)
+	if owner.shareURL(t, note.ID) != oldPath {
+		t.Error("copying with the original secret no longer recovers the unchanged URL")
 	}
 }
 

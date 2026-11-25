@@ -410,13 +410,12 @@ func (a *App) sharePage(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	data := pageData{Title: "Ссылка доступа", Note: n}
+	data := pageData{Title: "Публичная ссылка", Note: n}
 	share, err := a.db.ActiveShare(r.Context(), n.ID)
 	if err == nil {
-		data.ShareActive = true
 		data.ShareURL = a.shareURL(share)
 		if data.ShareURL == "" {
-			data.Message = "APP_SECRET изменён: прежняя ссылка всё ещё действует, но её нельзя восстановить для копирования. Верните исходный секрет, перевыпустите ссылку или отключите доступ ниже."
+			data.Message = "APP_SECRET изменён: прежняя ссылка всё ещё действует, но её нельзя скопировать. Для копирования нужен исходный секрет."
 		}
 	} else if !errors.Is(err, store.ErrNotFound) {
 		a.fail(w, r, err)
@@ -432,46 +431,30 @@ func (a *App) shareURL(share store.ShareLink) string {
 	return a.cfg.BaseURL + "/s/" + token
 }
 
-func (a *App) changeShare(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("noteID")
-	action := r.PostForm.Get("action")
-	switch action {
-	case "revoke":
-		if err := a.db.RevokeShare(r.Context(), id); err != nil {
-			a.fail(w, r, err)
-			return
-		}
-	case "create", "rotate":
-		shareID := store.NewID()
-		input := store.ShareLink{ID: shareID, NoteID: id, TokenHash: tokenHash(a.shareToken(shareID))}
-		if action == "rotate" {
-			if _, err := a.db.ReplaceShare(r.Context(), input); err != nil {
-				a.fail(w, r, err)
-				return
-			}
-			break
-		}
-		share, err := a.db.EnsureShare(r.Context(), input)
-		if err != nil {
-			a.fail(w, r, err)
-			return
-		}
-		if r.Header.Get("Accept") == "application/json" {
-			link := a.shareURL(share)
-			if link == "" {
-				a.apiError(w, r, http.StatusConflict, "share_unavailable", "Прежнюю ссылку нельзя восстановить. Перевыпустите её через отметку «По ссылке».")
-				return
-			}
-			a.writeJSON(w, r, http.StatusOK, struct {
-				URL string `json:"url"`
-			}{URL: link})
-			return
-		}
-	default:
+func (a *App) ensureShare(w http.ResponseWriter, r *http.Request) {
+	if r.PostForm.Get("action") != "create" {
 		a.fail(w, r, &HTTPError{422, "invalid_action", "Неизвестное действие"})
 		return
 	}
-	http.Redirect(w, r, "/notes/"+id+"/share", 303)
+	id := r.PathValue("noteID")
+	shareID := store.NewID()
+	share, err := a.db.EnsureShare(r.Context(), store.ShareLink{ID: shareID, NoteID: id, TokenHash: tokenHash(a.shareToken(shareID))})
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	if r.Header.Get("Accept") != "application/json" {
+		http.Redirect(w, r, "/notes/"+url.PathEscape(id)+"/share", http.StatusSeeOther)
+		return
+	}
+	link := a.shareURL(share)
+	if link == "" {
+		a.apiError(w, r, http.StatusConflict, "share_unavailable", "Прежняя ссылка всё ещё действует, но её нельзя скопировать после смены секрета сервера.")
+		return
+	}
+	a.writeJSON(w, r, http.StatusOK, struct {
+		URL string `json:"url"`
+	}{URL: link})
 }
 func (a *App) keyData(r *http.Request) (pageData, error) {
 	keys, err := a.db.APIKeys(r.Context())
