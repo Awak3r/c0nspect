@@ -33,7 +33,8 @@
 
       let failureMessage = 'Не удалось получить ссылку. Попробуйте ещё раз.';
       try {
-        const request = fetch(form.action, {
+        // The hidden input named "action" shadows the form.action property.
+        const request = fetch(form.getAttribute('action'), {
           method: 'POST',
           headers: { Accept: 'application/json' },
           body: new URLSearchParams(new FormData(form)),
