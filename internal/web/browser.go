@@ -79,12 +79,7 @@ func (a *App) project(w http.ResponseWriter, r *http.Request) {
 	a.page(w, r, 200, "project", pageData{Title: p.Name, Project: p, Notes: notes, Query: r.URL.Query().Get("q"), Sort: sort})
 }
 func (a *App) manageProject(w http.ResponseWriter, r *http.Request) {
-	p, err := a.db.Project(r.Context(), r.PathValue("projectID"))
-	if err != nil {
-		a.fail(w, r, err)
-		return
-	}
-	a.page(w, r, 200, "manage", pageData{Title: "Настройки проекта · " + p.Name, Project: p})
+	http.Redirect(w, r, "/projects/"+url.PathEscape(r.PathValue("projectID")), http.StatusSeeOther)
 }
 func (a *App) manageNote(w http.ResponseWriter, r *http.Request) {
 	n, err := a.db.Note(r.Context(), r.PathValue("noteID"))
@@ -123,7 +118,7 @@ func (a *App) editProject(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/projects/"+r.PathValue("projectID")+"/manage", 303)
+	http.Redirect(w, r, "/projects/"+url.PathEscape(r.PathValue("projectID")), http.StatusSeeOther)
 }
 func confirmed(r *http.Request) error {
 	if r.FormValue("confirm") != "DELETE" {
@@ -464,7 +459,7 @@ func (a *App) changeShare(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Accept") == "application/json" {
 			link := a.shareURL(share)
 			if link == "" {
-				a.apiError(w, r, http.StatusConflict, "share_unavailable", "Прежнюю ссылку нельзя восстановить. Перевыпустите её в настройках конспекта.")
+				a.apiError(w, r, http.StatusConflict, "share_unavailable", "Прежнюю ссылку нельзя восстановить. Перевыпустите её через отметку «По ссылке».")
 				return
 			}
 			a.writeJSON(w, r, http.StatusOK, struct {

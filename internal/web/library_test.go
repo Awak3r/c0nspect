@@ -64,8 +64,16 @@ func TestLibraryPrimaryActions(t *testing.T) {
 		if browserTestAttr(form, "method") != "post" || browserTestAttr(form, "enctype") != "multipart/form-data" || browserTestInput(t, form, "csrf") != "test-csrf" {
 			t.Error("moving import lost the native upload form or CSRF")
 		}
-		if !browserTestHasLink(doc, "/projects/project/manage") || browserTestHasLink(doc, "/notes/note") == empty {
-			t.Error("project page lost management or reading navigation")
+		if browserTestHasLink(doc, "/projects/project/manage") || browserTestHasLink(doc, "/notes/note") == empty {
+			t.Error("project page should link directly to reading without a management detour")
+		}
+		remove := browserTestForm(t, doc, "/projects/project/delete")
+		if remove.Parent.Data != "details" || hasLibraryAttr(remove.Parent, "open") || browserTestInput(t, remove, "csrf") != "test-csrf" || browserTestInput(t, remove, "confirm") != "DELETE" {
+			t.Fatal("project deletion must be collapsed and require confirmation")
+		}
+		summaries := browserTestElements(remove.Parent, "summary")
+		if len(summaries) != 1 || browserTestAttr(summaries[0], "aria-label") != "Удалить проект" {
+			t.Error("project trash icon has no accessible label")
 		}
 	}
 }
@@ -98,14 +106,14 @@ func TestLibraryRowsLinkToNoteSettingsAndMarkOnlySharedNotes(t *testing.T) {
 				}
 				browserTestForm(t, row, path+"/share")
 				var mark *html.Node
-				for _, span := range browserTestElements(row, "span") {
-					if hasLibraryAttr(span, "data-share-mark") {
-						mark = span
+				for _, link := range browserTestElements(row, "a") {
+					if hasLibraryAttr(link, "data-share-mark") {
+						mark = link
 						break
 					}
 				}
-				if mark == nil || hasLibraryAttr(mark, "hidden") == note.Shared {
-					t.Errorf("note %s has the wrong share indicator state", note.ID)
+				if mark == nil || hasLibraryAttr(mark, "hidden") == note.Shared || browserTestAttr(mark, "href") != path+"/share" {
+					t.Errorf("note %s has the wrong share indicator or management link", note.ID)
 				}
 			}
 		})

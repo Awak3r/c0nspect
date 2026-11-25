@@ -126,6 +126,12 @@ main.shell { padding-block: 3rem 5rem; }
 .library-titlebar > :first-child { flex: 1 1 14rem; min-width: 0; }
 .library-titlebar h1 { margin: 0; font-size: clamp(2.25rem, 5vw, 3.5rem); letter-spacing: -.045em; }
 .library-description { max-width: 60ch; margin: .75rem 0 0; color: var(--muted); }
+.project-intro { position: relative; }
+.library-titlebar .project-intro h1 { margin-inline-end: 3rem; }
+.project-delete > summary { position: absolute; inset-block-start: 0; inset-inline-end: 0; cursor: pointer; list-style: none; }
+.project-delete > summary::-webkit-details-marker { display: none; }
+.project-delete-form { max-width: 30rem; margin-top: 1rem; padding: .875rem 1rem; background: var(--surface); }
+.project-delete-form p { margin: 0; }
 .library-action { max-width: 100%; text-align: end; }
 .library-action[open] { flex: 0 1 24rem; }
 .library-action summary {
@@ -167,8 +173,8 @@ main.shell { padding-block: 3rem 5rem; }
 .note-row-meta { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 .note-row-actions { display: flex; align-items: center; }
 .share-button { min-width: 2.75rem; padding: .375rem; border-color: transparent; }
-.note-settings-link { display: inline-grid; place-items: center; min-width: 2.75rem; min-height: 2.75rem; color: var(--muted); text-decoration: none; }
-.note-settings-link:hover { background: var(--surface); color: var(--ink); }
+.note-settings-link, .project-delete > summary { display: inline-grid; place-items: center; min-width: 2.75rem; min-height: 2.75rem; color: var(--muted); text-decoration: none; }
+.note-settings-link:hover, .project-delete > summary:hover { background: var(--surface); color: var(--ink); }
 .share-status, .share-url { grid-column: 1 / -1; }
 .share-status { color: var(--muted); font-size: var(--text-small); }
 .share-status:empty { position: absolute; }
@@ -190,12 +196,7 @@ main.shell { padding-block: 3rem 5rem; }
 .settings-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: .75rem 2rem; align-items: baseline; }
 .settings-row h2 { margin-bottom: .25rem; font-size: var(--text-body); }
 .settings-row > * { min-width: 0; }
-.settings-form, .note-management > details > form { max-width: 32rem; }
-.settings-access {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .25rem 1rem;
-  margin-bottom: 1.25rem; padding: .75rem 1rem; background: var(--surface);
-}
-.settings-access .hint { margin: .25rem 0 0; }
+.note-management > details > form { max-width: 32rem; }
 .key-list { border-top: 1px solid var(--line); }
 .key-card { margin: 0; padding-block: .375rem; border-bottom: 1px solid var(--line); }
 .key-summary { display: inline-flex; align-items: baseline; justify-content: space-between; gap: .5rem 1rem; width: calc(100% - 1.5rem); vertical-align: top; }
@@ -312,7 +313,7 @@ input:-webkit-autofill { -webkit-text-fill-color: var(--ink); -webkit-box-shadow
   .key-details { grid-template-columns: minmax(0, 1fr); gap: .25rem; }
   .key-details dd { margin-bottom: .75rem; }
   main.auth-layout { width: min(23rem, calc(100% - 2rem)); }
-  .settings-access, .key-form { padding-inline: .75rem; }
+  .project-delete-form, .key-form { padding-inline: .75rem; }
   .reader-shell { padding-block: 1.5rem 3rem; }
   .reader-nav, .reader-heading, .reader-document-title .markdown > h1:first-child { margin-bottom: 1.5rem; }
   .markdown pre { padding: .75rem; }
@@ -333,7 +334,7 @@ input:-webkit-autofill { -webkit-text-fill-color: var(--ink); -webkit-box-shadow
 @media print {
   :root { color-scheme: light; --canvas: #ffffff; --surface: #ffffff; --ink: #000000; --muted: #383838; --line: #737373; --control: #737373; }
   @page { margin: 18mm; }
-  .site-header, .skip-link, .reader-nav, .actions, form, .library-action, .note-row-actions { display: none; }
+  .site-header, .skip-link, .reader-nav, .actions, form, .library-action, .note-row-actions, .project-delete { display: none; }
   .shell, .reader-shell { width: 100%; max-width: none; margin: 0; padding: 0; }
   main.shell, main.auth-layout { padding: 0; }
   .form-grid, main.auth-layout { display: block; }

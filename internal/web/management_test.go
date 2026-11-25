@@ -27,26 +27,13 @@ func TestCompactManagementTemplates(t *testing.T) {
 	}
 
 	projectPath := "/projects/" + project.ID
-	doc := libraryTestPage(t, app, "manage", pageData{Project: project, Notes: []store.Note{note, other}}, true)
-	if !browserTestHasLink(doc, projectPath) || len(browserTestElements(doc, "ul")) != 0 || len(browserTestElements(doc, "script")) != 0 {
-		t.Error("project settings should link back without rendering a second notes list")
-	}
-	edit := browserTestForm(t, doc, projectPath+"/edit")
-	if browserTestInput(t, edit, "name") != project.Name || browserTestInput(t, edit, "csrf") != "test-csrf" || edit.Parent.Data != "main" {
-		t.Error("project metadata form should be immediately visible")
-	}
-	remove := browserTestForm(t, doc, projectPath+"/delete")
-	if remove.Parent.Data != "details" || hasLibraryAttr(remove.Parent, "open") || browserTestInput(t, remove, "csrf") != "test-csrf" || browserTestInput(t, remove, "confirm") != "DELETE" {
-		t.Error("project deletion must be collapsed and require confirmation")
-	}
-
 	page := render("manage-note", pageData{Project: project, Projects: []store.Project{project}, Note: note, Entries: []noteEntry{{Note: note}}})
-	doc = browserTestDocument(t, page)
+	doc := browserTestDocument(t, page)
 	for _, action := range []string{"metadata", "replace", "attachments", "delete"} {
 		browserTestForm(t, doc, "/notes/"+note.ID+"/"+action)
 	}
-	if !browserTestHasLink(doc, projectPath) || browserTestHasLink(doc, projectPath+"/manage") || !browserTestHasLink(doc, "/notes/"+note.ID+"/share") {
-		t.Error("note settings omitted return or sharing link")
+	if !browserTestHasLink(doc, projectPath) || browserTestHasLink(doc, projectPath+"/manage") {
+		t.Error("note settings should return to the main project list")
 	}
 	if strings.Contains(page.Body.String(), other.Title) {
 		t.Error("settings page contains another note")
@@ -54,11 +41,11 @@ func TestCompactManagementTemplates(t *testing.T) {
 	if browserTestInput(t, browserTestForm(t, doc, "/notes/"+note.ID+"/replace"), "version") != "2" {
 		t.Error("note settings lost optimistic concurrency version")
 	}
-	browserTestManagementSharingState(t, browserTestManagementNote(t, doc, note.ID), note.ID, true)
+	browserTestReplacementPublicationWarning(t, browserTestManagementNote(t, doc, note.ID), note.ID, true)
 
 	page = render("manage-note", pageData{Project: project, Projects: []store.Project{project}, Note: other, Entries: []noteEntry{{Note: other}}})
 	doc = browserTestDocument(t, page)
-	browserTestManagementSharingState(t, browserTestManagementNote(t, doc, other.ID), other.ID, false)
+	browserTestReplacementPublicationWarning(t, browserTestManagementNote(t, doc, other.ID), other.ID, false)
 
 	response := httptest.NewRecorder()
 	app.Handler().ServeHTTP(response, httptest.NewRequest("GET", "/notes/"+note.ID+"/manage", nil))
@@ -71,7 +58,7 @@ func TestSharePageKeepsCurrentURLOutsideTheActionsDisclosure(t *testing.T) {
 	path := "/notes/" + note.ID + "/share"
 	page := libraryTestPage(t, app, "share", pageData{Note: note, ShareActive: true, ShareURL: "https://notes.example.test/s/test"}, true)
 	input := browserTestInputID(page, "share-url")
-	if input == nil || !hasLibraryAttr(input, "readonly") || !browserTestHasLink(page, "/notes/note/manage") {
+	if input == nil || !hasLibraryAttr(input, "readonly") || !browserTestHasLink(page, "/projects/project") || browserTestHasLink(page, "/notes/note/manage") {
 		t.Fatal("share page lost the read-only link or back navigation")
 	}
 	details := browserTestElements(page, "details")
@@ -98,7 +85,7 @@ func TestMinimalInterfaceCopy(t *testing.T) {
 	project := store.Project{ID: "project", Name: "Мой проект", Description: "Моё описание проекта"}
 	note := store.Note{ID: "note", ProjectID: project.ID, Title: "Мой конспект", Version: 1}
 	data := pageData{Project: project, Projects: []store.Project{project}, Note: note, Notes: []store.Note{note}, Entries: []noteEntry{{Note: note}}}
-	for _, name := range []string{"login", "projects", "project", "manage", "manage-note", "share", "keys"} {
+	for _, name := range []string{"login", "projects", "project", "manage-note", "share", "keys"} {
 		t.Run(name, func(t *testing.T) {
 			page := httptest.NewRecorder()
 			app.page(page, httptest.NewRequest("GET", "/", nil), 200, name, data)

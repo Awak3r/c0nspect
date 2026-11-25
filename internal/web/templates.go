@@ -104,7 +104,7 @@ const pageTemplates = `
   <li>
     <div class="note-row-main">
       <a class="item-title" href="/notes/{{.ID}}">{{.Title}}</a>
-      {{if $.Owner}}<span class="note-share-mark" data-share-mark{{if not .Shared}} hidden{{end}}>По ссылке</span>{{end}}
+      {{if $.Owner}}<a class="note-share-mark" href="/notes/{{.ID}}/share" title="Управлять ссылкой" aria-label="Управлять ссылкой: {{.Title}}" data-share-mark{{if not .Shared}} hidden{{end}}>По ссылке</a>{{end}}
     </div>
     <div class="note-row-meta">
       {{template "library-date" .UpdatedAt}}
@@ -228,10 +228,18 @@ const pageTemplates = `
 <main class="shell library-shell" id="main">
   <p class="breadcrumbs"><a href="/projects">← Проекты</a></p>
   <div class="library-titlebar">
-    <div>
+    <div class="project-intro">
       <h1>{{.Project.Name}}</h1>
       {{if .Project.Description}}<p class="description library-description">{{.Project.Description}}</p>{{end}}
-      <a class="text-action" href="/projects/{{.Project.ID}}/manage">Настройки проекта</a>
+      <details class="project-delete">
+        <summary title="Удалить проект" aria-label="Удалить проект"><span aria-hidden="true">🗑︎</span></summary>
+        <form class="stack project-delete-form" method="post" action="/projects/{{.Project.ID}}/delete">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <p>Проект, его конспекты и вложения будут удалены. Публичные ссылки перестанут работать. Отменить удаление нельзя.</p>
+          <label class="check"><input type="checkbox" name="confirm" value="DELETE" required> <span>Подтверждаю удаление проекта и всех его материалов.</span></label>
+          <div><button class="button-danger" type="submit">Удалить проект</button></div>
+        </form>
+      </details>
     </div>
     <details class="library-action"{{if not (or .Query .Notes)}} open{{end}}>
       <summary>Импорт .md</summary>
@@ -256,40 +264,6 @@ const pageTemplates = `
 </body>
 </html>{{end}}
 
-{{define "manage"}}{{template "head" .}}
-<body>
-{{template "header" .}}
-<main class="shell settings-shell" id="main">
-  <p class="breadcrumbs"><a href="/projects/{{.Project.ID}}">← К проекту</a></p>
-  <div class="page-heading settings-heading">
-    <p class="page-kicker">Настройки проекта</p>
-    <h1>{{.Project.Name}}</h1>
-  </div>
-  {{template "notices" .}}
-  <form class="stack settings-form" method="post" action="/projects/{{.Project.ID}}/edit">
-    <input type="hidden" name="csrf" value="{{.CSRF}}">
-    <div>
-      <label for="edit-project-name">Название</label>
-      <input id="edit-project-name" name="name" type="text" value="{{.Project.Name}}" maxlength="300" required>
-    </div>
-    <div>
-      <label for="edit-project-description">Описание <span class="optional">(необязательно)</span></label>
-      <textarea id="edit-project-description" name="description" rows="3">{{.Project.Description}}</textarea>
-    </div>
-    <div><button type="submit">Сохранить проект</button></div>
-  </form>
-  <details class="settings-divider disclosure section">
-    <summary id="delete-project-title">Удалить проект</summary>
-    <p>Будут удалены проект, все его конспекты и вложения. Отменить это действие нельзя.</p>
-    <form class="stack" method="post" action="/projects/{{.Project.ID}}/delete">
-      <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <label class="check"><input type="checkbox" name="confirm" value="DELETE" required> <span>Подтверждаю удаление проекта со всеми материалами и отключение их ссылок доступа.</span></label>
-      <div><button class="button-danger" type="submit">Удалить проект и материалы</button></div>
-    </form>
-  </details>
-</main>
-</body>
-</html>{{end}}
 
 {{define "manage-note"}}{{template "head" .}}
 <body>
@@ -305,13 +279,7 @@ const pageTemplates = `
     {{range .Entries}}
     {{$note := .Note}}
     <div class="note-management">
-      <div class="settings-access">
-        <div>
-          <strong>{{if $note.Shared}}Доступен по ссылке{{else}}Только для вас{{end}}</strong>
-          {{if $note.Shared}}<p class="hint">Замена файла и правки через MCP сразу станут видны читателям.</p>{{end}}
-        </div>
-        <a class="text-action" href="/notes/{{$note.ID}}/share">Доступ по ссылке →</a>
-      </div>
+
       {{if .Warnings}}<div class="notice notice-error" role="status"><strong>Не все изображения доступны:</strong><ul>{{range .Warnings}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
       <section class="settings-row" aria-labelledby="metadata-{{$note.ID}}">
           <h2 id="metadata-{{$note.ID}}">Название и проект</h2>
@@ -335,6 +303,7 @@ const pageTemplates = `
         <div>
           <h2 id="replace-{{$note.ID}}">Исходный Markdown</h2>
           <p class="item-meta">Версия {{$note.Version}} · {{template "library-date" $note.UpdatedAt}}</p>
+          {{if $note.Shared}}<p class="hint">Замена файла и правки через MCP сразу станут видны читателям.</p>{{end}}
         </div>
           <form class="stack" method="post" action="/notes/{{$note.ID}}/replace" enctype="multipart/form-data">
             <input type="hidden" name="csrf" value="{{$.CSRF}}">
@@ -422,7 +391,7 @@ const pageTemplates = `
 <body>
 {{template "header" .}}
 <main class="shell narrow" id="main">
-  <p class="breadcrumbs"><a href="/notes/{{.Note.ID}}/manage">← Настройки конспекта</a></p>
+  <p class="breadcrumbs"><a href="/projects/{{.Note.ProjectID}}">← К проекту</a></p>
   <div class="page-heading settings-heading">
     <h1>Доступ по ссылке</h1>
     <a class="text-action" href="/notes/{{.Note.ID}}">{{.Note.Title}} →</a>

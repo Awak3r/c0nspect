@@ -43,7 +43,7 @@
           redirect: 'error',
         }).then(async response => {
           if (response.status === 409) {
-            failureMessage = 'Прежнюю ссылку нельзя скопировать. Перевыпустите её в настройках конспекта.';
+            failureMessage = 'Прежнюю ссылку нельзя скопировать. Перевыпустите её через «По ссылке».';
           }
           if (!response.ok) throw new Error();
           const { url } = await response.json();

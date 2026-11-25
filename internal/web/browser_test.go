@@ -231,28 +231,24 @@ func browserTestManagementNote(t *testing.T, doc *html.Node, noteID string) *htm
 
 const browserTestPublicationWarning = "Замена файла и правки через MCP сразу станут видны читателям."
 
-func browserTestManagementSharingState(t *testing.T, entry *html.Node, noteID string, shared bool) {
+func browserTestReplacementPublicationWarning(t *testing.T, entry *html.Node, noteID string, shared bool) {
 	t.Helper()
-	replace := browserTestForm(t, entry, "/notes/"+noteID+"/replace")
+	path := "/notes/" + noteID
+	if browserTestHasLink(entry, path+"/share") {
+		t.Error("note settings should not contain sharing controls")
+	}
+	replace := browserTestForm(t, entry, path+"/replace")
 	seenWarning := false
-	seenShared, seenPrivate := false, false
-	browserTestWalk(entry, func(node *html.Node) {
-		if node.Type == html.ElementNode {
-			switch node.Data {
-			case "p":
-				seenWarning = seenWarning || browserTestText(node) == browserTestPublicationWarning
-			case "strong":
-				text := browserTestText(node)
-				seenShared = seenShared || text == "Доступен по ссылке"
-				seenPrivate = seenPrivate || text == "Только для вас"
-			}
+	browserTestWalk(replace.Parent, func(node *html.Node) {
+		if node.Type == html.ElementNode && node.Data == "p" && browserTestText(node) == browserTestPublicationWarning {
+			seenWarning = true
 		}
 		if node == replace && shared && !seenWarning {
 			t.Error("shared-note warning does not precede the replacement form")
 		}
 	})
-	if seenWarning != shared || seenShared != shared || seenPrivate == shared {
-		t.Error("management warning or access label does not reflect the note's sharing state")
+	if seenWarning != shared {
+		t.Error("replacement warning does not reflect the note's sharing state")
 	}
 }
 
@@ -675,7 +671,7 @@ func TestBrowserFormPagesPreserveSameOriginReferrerPolicy(t *testing.T) {
 		client *browserTestClient
 	}{
 		{"/login", anonymous}, {"/projects", b}, {"/projects/" + project.ID, b},
-		{"/projects/" + project.ID + "/manage", b}, {"/notes/" + note.ID + "/manage", b}, {"/notes/" + note.ID + "/share", b}, {"/settings/api-keys", b},
+		{"/notes/" + note.ID + "/manage", b}, {"/notes/" + note.ID + "/share", b}, {"/settings/api-keys", b},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			response := tc.client.request(t, "GET", tc.path, nil, nil)
@@ -709,17 +705,15 @@ func TestBrowserFormPagesPreserveSameOriginReferrerPolicy(t *testing.T) {
 			}
 		})
 	}
-	anonymous.login(t, browserTestUsername, browserTestPassword)
-	page := b.request(t, "GET", "/projects/"+project.ID+"/manage", nil, nil)
+	projectPath := "/projects/" + project.ID
+	page := b.request(t, "GET", projectPath, nil, nil)
 	browserTestStatus(t, page, 200)
-	action := "/projects/" + project.ID + "/edit"
-	form := browserTestForm(t, browserTestDocument(t, page), action)
+	form := browserTestForm(t, browserTestDocument(t, page), projectPath+"/delete")
 	browserTestRedirect(t, b.form(t, browserTestAttr(form, "action"), url.Values{
-		"csrf": {browserTestInput(t, form, "csrf")}, "name": {"Native form edit"}, "description": {"Submitted without JavaScript"},
-	}), "/projects/"+project.ID+"/manage")
-	updated, err := db.Project(t.Context(), project.ID)
-	if err != nil || updated.Name != "Native form edit" || updated.Description != "Submitted without JavaScript" {
-		t.Fatalf("same-origin native form submission failed: %v", err)
+		"csrf": {browserTestInput(t, form, "csrf")}, "confirm": {browserTestInput(t, form, "confirm")},
+	}), "/projects")
+	if _, err := db.Project(t.Context(), project.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("same-origin native delete form did not delete the project: %v", err)
 	}
 }
 
@@ -775,20 +769,19 @@ func TestBrowserProjectsAndMarkdownImports(t *testing.T) {
 	app, db := newTestApp(t)
 	b := browserTestOwner(t, app, db)
 	project := b.createProject(t, "  Математика <основы>  ", "Описание <script>not executable</script>")
-	managePath := "/projects/" + project.ID + "/manage"
-	page := b.request(t, "GET", managePath, nil, nil)
+	projectPath := "/projects/" + project.ID
+	browserTestRedirect(t, b.request(t, "GET", projectPath+"/manage", nil, nil), projectPath)
+	page := b.request(t, "GET", projectPath, nil, nil)
 	browserTestStatus(t, page, 200)
 	doc := browserTestDocument(t, page)
-	for _, action := range []string{"/projects/" + project.ID + "/edit", "/projects/" + project.ID + "/delete"} {
-		form := browserTestForm(t, doc, action)
-		if browserTestAttr(form, "method") != "post" || browserTestInput(t, form, "csrf") != b.csrf {
-			t.Errorf("management form %q has incorrect method or CSRF", action)
-		}
+	remove := browserTestForm(t, doc, projectPath+"/delete")
+	if browserTestInput(t, remove, "csrf") != b.csrf {
+		t.Error("project delete form omitted CSRF")
 	}
 	if len(browserTestElements(doc, "script")) != 0 || !strings.Contains(browserTestText(doc), project.Description) {
 		t.Error("project description was not escaped as text")
 	}
-	browserTestRedirect(t, b.form(t, "/projects/"+project.ID+"/edit", url.Values{"name": {"Изменённый проект"}, "description": {"Новое описание"}}), managePath)
+	browserTestRedirect(t, b.form(t, projectPath+"/edit", url.Values{"name": {"Изменённый проект"}, "description": {"Новое описание"}}), projectPath)
 	updatedProject, err := db.Project(t.Context(), project.ID)
 	if err != nil || updatedProject.Name != "Изменённый проект" || updatedProject.Description != "Новое описание" || !updatedProject.CreatedAt.Equal(project.CreatedAt) {
 		t.Fatalf("project edit was not persisted correctly: %v", err)
@@ -832,8 +825,8 @@ func TestBrowserProjectsAndMarkdownImports(t *testing.T) {
 	page = b.request(t, "GET", "/projects/"+project.ID, nil, nil)
 	browserTestStatus(t, page, 200)
 	doc = browserTestDocument(t, page)
-	if !browserTestHasLink(doc, managePath) {
-		t.Error("project page omitted separate management link")
+	if browserTestHasLink(doc, projectPath+"/manage") {
+		t.Error("project page still links to separate management")
 	}
 	form := browserTestForm(t, doc, "/projects/"+project.ID+"/notes")
 	if browserTestAttr(form, "method") != "post" || browserTestInput(t, form, "csrf") != b.csrf {
@@ -954,7 +947,7 @@ func TestBrowserReplacementAndMetadataPreserveIdentityShareAndAssets(t *testing.
 		page := b.request(t, "GET", "/notes/"+note.ID+"/manage", nil, nil)
 		browserTestStatus(t, page, 200)
 		entry := browserTestManagementNote(t, browserTestDocument(t, page), note.ID)
-		browserTestManagementSharingState(t, entry, note.ID, shared)
+		browserTestReplacementPublicationWarning(t, entry, note.ID, shared)
 	}
 	checkSharedWarning(false)
 	b.changeShare(t, note.ID, "create")
@@ -1573,7 +1566,7 @@ func TestBrowserImageWarningsOnlyAppearInManagement(t *testing.T) {
 			}
 		})
 	}
-	for _, path := range []string{"/projects/" + project.ID, "/projects/" + project.ID + "/manage", "/projects?q=Image", "/notes/" + note.ID + "/share"} {
+	for _, path := range []string{"/projects/" + project.ID, "/projects?q=Image", "/notes/" + note.ID + "/share"} {
 		page := b.request(t, "GET", path, nil, nil)
 		browserTestStatus(t, page, 200)
 		browserTestNoPrivateValues(t, page, "Не все изображения доступны:", relative, unknown, external)
