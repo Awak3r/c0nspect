@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from time import monotonic_ns
 
 from operations import (
     BUNDLE_FILES,
@@ -14,6 +15,7 @@ from operations import (
     Compose,
     OperationError,
     add_compose_arguments,
+    emit_timing,
     now,
     operation_lock,
     sha256,
@@ -28,12 +30,13 @@ def create_backup(compose, output):
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     partial = Path(tempfile.mkdtemp(prefix=".partial-", dir=output))
     destination = output / ("conspect-" + now().strftime("%Y%m%dT%H%M%S.%fZ"))
-    stopped = False
+    pause_started = None
+    published = False
     try:
         shutil.copyfile(compose.env_path, partial / "config.env")
         write_json(partial / "compose.resolved.json", compose.config)
         print("Stopping app for a consistent database + uploads snapshot...", flush=True)
-        stopped = True
+        pause_started = monotonic_ns()
         compose.stop(["app"])
         with (partial / "database.dump").open("xb") as target:
             compose.call(
@@ -58,13 +61,19 @@ def create_backup(compose, output):
             with (partial / name).open("rb") as source:
                 os.fsync(source.fileno())
         partial.rename(destination)
+        published = True
         print(f"Backup published locally: {destination}", flush=True)
     finally:
         shutil.rmtree(partial, ignore_errors=True)
         # A backup never mutates stored data. Restore the prior running state even
         # when pg_dump/tar fails; never start an app that was already stopped.
-        if stopped:
-            compose.resume({"app": states["app"]})
+        if pause_started is not None:
+            resumed = False
+            try:
+                compose.resume({"app": states["app"]})
+                resumed = True
+            finally:
+                emit_timing("backup_pause", pause_started, published and resumed)
     return destination
 
 

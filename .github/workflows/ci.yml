@@ -146,10 +146,16 @@ jobs:
           tags: ${{ env.IMAGE }}:${{ github.sha }}
           cache-from: type=gha,scope=conspect-amd64
           cache-to: type=gha,mode=max,scope=conspect-amd64
-      - name: Smoke image with disposable PostgreSQL and remote MCP
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install browser smoke harness
+        run: npm ci --prefix .github/browser --ignore-scripts --no-audit --no-fund
+      - name: Smoke image with PostgreSQL, MCP and Chromium
         env:
           SMOKE_IMAGE: ${{ env.IMAGE }}:${{ github.sha }}
-        run: python3 .github/scripts/smoke_image.py "$SMOKE_IMAGE"
+        run: python3 .github/scripts/smoke_image.py "$SMOKE_IMAGE" --browser
 
   deploy:
     name: Deploy production
@@ -188,3 +194,22 @@ jobs:
       - name: Clean staging and local SSH credentials
         if: ${{ always() && steps.configure.outputs.configured == 'true' }}
         run: python3 .github/scripts/deploy.py cleanup
+
+  timings:
+    name: Pipeline timings
+    needs: [plan, checks, image, deploy]
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Summarize current run attempt
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/summarize_ci.py

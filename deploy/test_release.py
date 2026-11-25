@@ -366,6 +366,8 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(OperationError):
             self.invoke()
         self.assertEqual(self.events[-4:], ["up", "stop", "state-failed", "unlock"])
+        self.assertRegex(self.stdout.getvalue(), r"CONSPECT_TIMING activate failed [0-9]+\n")
+        self.assertNotIn("CONSPECT_TIMING public_check", self.stdout.getvalue())
         self.assertEqual(self.app_state, "exited")
         self.assertEqual(self.active_image, IMAGE)
         self.assert_installed_files(self.new_files)
@@ -381,6 +383,7 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(OperationError, "mcp-check"):
             self.invoke()
         self.assertEqual(self.events[-5:], ["up", "mcp-check", "stop", "state-failed", "unlock"])
+        self.assertRegex(self.stdout.getvalue(), r"CONSPECT_TIMING public_check failed [0-9]+\n")
         self.assertEqual(self.app_state, "exited")
         self.assertEqual(self.env.read_text(), release.replace_image(ENV, IMAGE))
         state = json.loads((self.root / ".release.json").read_text())

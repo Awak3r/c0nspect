@@ -9,9 +9,33 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from time import monotonic_ns
 
 
 IMAGE = "ghcr.io/awak3r/c0nspect"
+REMOTE_STAGES = {
+    "pull": "GHCR login and image pull",
+    "backup": "Verified backup (total)",
+    "backup_pause": "Backup stop request → resume command finished¹",
+    "activate": "Container replacement → Compose healthy¹",
+    "public_check": "Public HTTPS/MCP acceptance",
+}
+TIMING = re.compile(r"CONSPECT_TIMING ([a-z_]+) (ok|failed) ([0-9]{1,10})")
+
+
+def write_release_summary(log, transfer_ms):
+    rows = [f"| Stage deployment files over SSH | {transfer_ms / 1000:.2f} s | ok |"]
+    log.seek(0)
+    for line in log:
+        print(line, end="", flush=True)
+        match = TIMING.fullmatch(line.rstrip("\n"))
+        if match and match[1] in REMOTE_STAGES:
+            rows.append(f"| {REMOTE_STAGES[match[1]]} | {int(match[3]) / 1000:.2f} s | {match[2]} |")
+    if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(summary, "a", encoding="utf-8") as output:
+            output.write("## Server release timings\n\n| Stage | Duration | Result |\n| --- | ---: | --- |\n")
+            output.write("\n".join(rows) + "\n\n")
+            output.write("¹ These are server-side maintenance intervals, not measured public downtime. Backup pause is included in the backup total.\n\n")
 
 
 def checked(name, pattern, default=None):
@@ -67,7 +91,7 @@ class Deployment:
             shutil.rmtree(self.state)
             raise
 
-    def ssh(self, command, *, stdin=None, input=None, timeout=120):
+    def ssh(self, command, *, stdin=None, input=None, stdout=None, timeout=120):
         # SSH still invokes a remote shell: quote EVERY remote argv element.
         argv = [
             "ssh", "-F", "/dev/null", "-T",
@@ -84,13 +108,14 @@ class Deployment:
         ]
         if stdin is None and input is None:
             stdin = subprocess.DEVNULL
-        subprocess.run(argv, stdin=stdin, input=input, check=True, timeout=timeout)
+        subprocess.run(argv, stdin=stdin, input=input, stdout=stdout, check=True, timeout=timeout)
 
     def release(self):
         token = os.environ.get("GITHUB_TOKEN", "")
         if not token or "\n" in token or "\r" in token:
             raise ValueError("GITHUB_TOKEN must be a nonempty single line")
         # This archive excludes application source, local secrets and untracked files.
+        stage_started = monotonic_ns()
         with tempfile.TemporaryFile() as archive:
             subprocess.run(
                 ["git", "archive", "--format=tar", self.revision, "compose.yaml", "deploy"],
@@ -107,6 +132,7 @@ class Deployment:
             # Only remove a directory that this run successfully created.
             (self.state / "staged").touch(exist_ok=False)
             self.ssh(shlex.join(["tar", "-xf", "-", "-C", self.staging]), stdin=archive)
+        transfer_ms = (monotonic_ns() - stage_started) // 1_000_000
         command = [
             "python3", f"{self.staging}/deploy/release.py",
             "--source", self.staging, "--root", self.root,
@@ -114,7 +140,14 @@ class Deployment:
             "--registry-user", self.actor, "--revision", self.revision,
         ]
         # Never put the registry token in argv, remote files or shell text.
-        self.ssh(shlex.join(command), input=(token + "\n").encode(), timeout=1800)
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as log:
+            try:
+                self.ssh(shlex.join(command), input=(token + "\n").encode(), stdout=log, timeout=1800)
+            finally:
+                try:
+                    write_release_summary(log, transfer_ms)
+                except OSError:
+                    print("Release timing summary unavailable.", file=sys.stderr)
 
     def cleanup(self):
         try:

@@ -1,5 +1,7 @@
 """Transport contracts only: fake SSH/git, synthetic credentials, no live host."""
 
+from contextlib import redirect_stdout
+import io
 import os
 from pathlib import Path
 import shlex
@@ -8,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from deploy import Deployment, IMAGE
+from deploy import Deployment, IMAGE, write_release_summary
 
 
 class DeploymentTests(unittest.TestCase):
@@ -130,6 +132,21 @@ class DeploymentTests(unittest.TestCase):
         for call in calls:
             self.assertNotIn("synthetic-test-token", str(call.args))
         self.assertTrue((deployment.state / "staged").exists())
+
+    def test_summary_accepts_only_known_timing_records(self):
+        path = self.base / "summary"
+        raw = "ordinary message\nCONSPECT_TIMING pull ok 1234\nCONSPECT_TIMING activate failed 500\nCONSPECT_TIMING private ok 1\nCONSPECT_TIMING backup ok 0 | injected\n"
+        stdout = io.StringIO()
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(path)}), redirect_stdout(stdout):
+            write_release_summary(io.StringIO(raw), 1000)
+        self.assertEqual(stdout.getvalue(), raw)
+        summary = path.read_text()
+        self.assertIn("Stage deployment files over SSH | 1.00 s | ok", summary)
+        self.assertIn("GHCR login and image pull | 1.23 s | ok", summary)
+        self.assertIn("Container replacement → Compose healthy¹ | 0.50 s | failed", summary)
+        self.assertNotIn("ordinary message", summary)
+        self.assertNotIn("private", summary)
+        self.assertNotIn("injected", summary)
 
     @patch("deploy.subprocess.run")
     def test_invalid_token_prevents_remote_side_effects(self, run):

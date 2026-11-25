@@ -171,6 +171,31 @@ class ImageSmokeTests(unittest.TestCase):
         self.assertEqual([command[-1] for command in removals], ["db-owned", "app-owned", "network-owned"])
         self.assertTrue(all("--volumes" in command for command in removals[:2]))
 
+    def test_browser_failure_cleans_up_disposable_resources(self):
+        def browser(password):
+            self.assertEqual(password, self.environments["app"]["OWNER_PASSWORD"])
+            self.assertTrue(self.containers)
+            self.assertEqual(self.http_calls[-1][1], "/mcp")
+            raise smoke.SmokeError("browser failed")
+
+        with patch("smoke_image.check_browser", side_effect=browser) as check:
+            with self.assertRaisesRegex(smoke.SmokeError, "browser failed"):
+                smoke.ImageSmoke(self.image, browser=True).run()
+        check.assert_called_once()
+        self.assert_clean()
+
+    def test_browser_process_receives_password_on_stdin(self):
+        with patch("smoke_image.subprocess.run", side_effect=subprocess.TimeoutExpired("node", 75)) as run:
+            with self.assertRaisesRegex(smoke.SmokeError, "Chromium browser smoke"):
+                smoke.check_browser("synthetic-password")
+        args, kwargs = run.call_args
+        self.assertEqual(args[0][0], "node")
+        self.assertNotIn("synthetic-password", str(args))
+        self.assertEqual(kwargs["input"], "synthetic-password\n")
+        self.assertNotIn("DATABASE_URL", kwargs["env"])
+        self.assertNotIn("APP_SECRET", kwargs["env"])
+        self.assertEqual(kwargs["timeout"], 75)
+
     def test_unique_resource_ownership(self):
         first, second = smoke.ImageSmoke(self.image), smoke.ImageSmoke(self.image)
         self.assertNotEqual(first.selector, second.selector)

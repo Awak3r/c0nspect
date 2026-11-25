@@ -16,7 +16,7 @@ import tempfile
 import operations
 from backup import create_backup
 from check_mcp import check_mcp, mcp_base_url
-from operations import Compose, OperationError, operation_lock, run_command
+from operations import Compose, OperationError, operation_lock, run_command, timed_stage
 from prerequisites import check_compose
 
 IMAGE_PATTERN = r"ghcr\.io/awak3r/c0nspect@sha256:[0-9a-f]{64}"
@@ -166,7 +166,8 @@ def release(source, root, image, username, revision, token):
         if current.states().get("app") != "running":
             raise OperationError("App must be running before an automated release; recover it manually first.")
         print("Pulling immutable image before the maintenance window...", flush=True)
-        pull_image(image, username, token)
+        with timed_stage("pull"):
+            pull_image(image, username, token)
         # Resolve incoming Compose without changing the live installation or exposing secrets.
         previous_image = os.environ.get("CONSPECT_IMAGE")
         try:
@@ -178,7 +179,8 @@ def release(source, root, image, username, revision, token):
                 os.environ.pop("CONSPECT_IMAGE", None)
             else:
                 os.environ["CONSPECT_IMAGE"] = previous_image
-        backup = create_backup(current, backup_root)
+        with timed_stage("backup"):
+            backup = create_backup(current, backup_root)
         state = {"revision": revision, "image": image, "previous_image": current.image,
                  "backup": str(backup), "status": "activating",
                  "updated_at": datetime.now(timezone.utc).isoformat()}
@@ -202,10 +204,12 @@ def release(source, root, image, username, revision, token):
             run_command(command + ["config", "--quiet"])
             activated = True
             # Only replace app: never recreate PostgreSQL, rebuild, or pull mutable DB tags.
-            run_command(command + ["up", "--detach", "--no-deps", "--no-build", "--pull", "never",
-                                   "--wait", "--wait-timeout", "180", "app"], timeout=240)
+            with timed_stage("activate"):
+                run_command(command + ["up", "--detach", "--no-deps", "--no-build", "--pull", "never",
+                                       "--wait", "--wait-timeout", "180", "app"], timeout=240)
             if mcp_url is not None:
-                check_mcp(mcp_url)
+                with timed_stage("public_check"):
+                    check_mcp(mcp_url)
         except BaseException:
             state["status"] = "failed"
             if activated:

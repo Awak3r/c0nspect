@@ -11,6 +11,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from time import monotonic_ns
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -63,6 +64,22 @@ def write_json(path, value):
 
 def now():
     return datetime.now(timezone.utc)
+
+
+def emit_timing(stage, started, success):
+    milliseconds = (monotonic_ns() - started) // 1_000_000
+    print(f"CONSPECT_TIMING {stage} {'ok' if success else 'failed'} {milliseconds}", flush=True)
+
+
+@contextmanager
+def timed_stage(stage):
+    started = monotonic_ns()
+    success = False
+    try:
+        yield
+        success = True
+    finally:
+        emit_timing(stage, started, success)
 
 
 @contextmanager

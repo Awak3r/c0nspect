@@ -4,6 +4,7 @@
 import http.client
 import json
 import os
+from pathlib import Path
 import secrets
 import signal
 import subprocess
@@ -123,11 +124,21 @@ def check_endpoints():
         raise SmokeError("POST /mcp: expected HTTP 401 with the canonical OAuth discovery challenge.")
 
 
+def check_browser(password):
+    script = Path(__file__).resolve().parents[1] / "browser" / "smoke.mjs"
+    environment = {name: os.environ[name] for name in ("PATH", "HOME", "TMPDIR", "CONSPECT_SMOKE_CHROMIUM") if name in os.environ}
+    try:
+        subprocess.run(["node", str(script)], input=password + "\n", text=True, env=environment, check=True, timeout=75)
+    except (OSError, subprocess.SubprocessError):
+        raise SmokeError("Chromium browser smoke did not complete successfully.") from None
+
+
 class ImageSmoke:
-    def __init__(self, image):
+    def __init__(self, image, *, browser=False):
         if not image or image.startswith("-") or any(c.isspace() or ord(c) < 32 for c in image):
             raise SmokeError("Supply one local Docker image reference, not options or whitespace.")
         self.image = image
+        self.browser = browser
         self.token = secrets.token_hex(16)
         self.selector = f"{LABEL}={self.token}"
         self.network = f"conspect-smoke-{self.token}"
@@ -178,6 +189,8 @@ class ImageSmoke:
             )
             wait_until(healthy, "smoke app /healthz HTTP 200")
             check_endpoints()
+            if self.browser:
+                check_browser(environment["OWNER_PASSWORD"])
         finally:
             self.cleanup()
 
@@ -211,12 +224,13 @@ def interrupted(signum, frame):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("usage: python3 .github/scripts/smoke_image.py IMAGE", file=sys.stderr)
+    browser = sys.argv[2:] == ["--browser"]
+    if len(sys.argv) < 2 or (len(sys.argv) != 2 and not browser):
+        print("usage: python3 .github/scripts/smoke_image.py IMAGE [--browser]", file=sys.stderr)
         return 2
     previous = signal.signal(signal.SIGTERM, interrupted)
     try:
-        ImageSmoke(sys.argv[1]).run()
+        ImageSmoke(sys.argv[1], browser=browser).run()
     except (SmokeError, KeyboardInterrupt) as error:
         message = str(error) if isinstance(error, SmokeError) else "Image smoke interrupted."
         print(f"Image smoke failed: {message}", file=sys.stderr)

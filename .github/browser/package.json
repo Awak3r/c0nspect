@@ -1,0 +1,7 @@
+{
+  "name": "conspect-browser-smoke",
+  "private": true,
+  "dependencies": {
+    "playwright-core": "1.65.1"
+  }
+}
