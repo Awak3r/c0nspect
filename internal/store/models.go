@@ -123,6 +123,7 @@ type Repository interface {
 	Attachment(context.Context, string, string) (Attachment, error)
 	CreateAttachment(context.Context, Attachment, Actor, int64) (Attachment, error)
 	DeleteAttachment(context.Context, string, string) (Attachment, error)
+	EnsureShare(context.Context, ShareLink) (ShareLink, error)
 	ReplaceShare(context.Context, ShareLink) (ShareLink, error)
 	ActiveShare(context.Context, string) (ShareLink, error)
 	ShareByHash(context.Context, string) (ShareLink, error)

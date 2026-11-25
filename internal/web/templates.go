@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"html/template"
 	"net/http"
+	"strings"
 
 	"conspect/internal/store"
 )
@@ -11,7 +12,7 @@ import (
 type pageData struct {
 	Title, CSRF, Error, Message, Query, Sort, ShareURL, KeySecret string
 	Owner, DocumentHasTitle                                       bool
-	ShareActive                                                   bool
+	ShareActive, QuickShare                                       bool
 	CurrentPage                                                   string
 	Projects                                                      []store.Project
 	Project                                                       store.Project
@@ -43,6 +44,7 @@ func (a *App) page(w http.ResponseWriter, r *http.Request, status int, templateN
 	if session, ok := r.Context().Value(sessionKey{}).(store.Session); ok {
 		data.Owner, data.CSRF = true, session.CSRFToken
 	}
+	data.QuickShare = data.Owner && len(data.Notes) != 0 && (templateName == "project" || (templateName == "projects" && data.Query != ""))
 	w.Header().Set("Cache-Control", "no-store")
 
 	// Buffer before committing headers: execution errors may follow private output.
@@ -51,6 +53,10 @@ func (a *App) page(w http.ResponseWriter, r *http.Request, status int, templateN
 		// Do not expose or log execution errors: they can contain note text or secrets.
 		http.Error(w, "Не удалось отобразить страницу", http.StatusInternalServerError)
 		return
+	}
+	if data.QuickShare {
+		policy := w.Header().Get("Content-Security-Policy")
+		w.Header().Set("Content-Security-Policy", strings.Replace(policy, "connect-src 'none'", "connect-src 'self'", 1))
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
@@ -66,6 +72,7 @@ const pageTemplates = `
   <meta name="referrer" content="same-origin">
   <title>{{if .Title}}{{.Title}} · {{end}}Конспект</title>
   <link rel="stylesheet" href="{{stylesheet}}">
+  {{if .QuickShare}}<script defer src="/assets/share.js"></script>{{end}}
 </head>{{end}}
 
 {{define "header"}}
@@ -93,10 +100,23 @@ const pageTemplates = `
 
 {{define "note-list"}}
 <ul class="note-list">
-  {{range .}}
+  {{range .Notes}}
   <li>
     <a class="item-title" href="/notes/{{.ID}}">{{.Title}}</a>
-    {{template "library-date" .UpdatedAt}}
+    <div class="note-row-meta">
+      {{template "library-date" .UpdatedAt}}
+      {{if $.QuickShare}}
+      <form method="post" action="/notes/{{.ID}}/share" data-quick-share>
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="action" value="create">
+        <button type="submit" class="button-quiet share-button" title="Поделиться по ссылке" aria-label="Поделиться по ссылке: {{.Title}}"><span aria-hidden="true">🔗</span></button>
+      </form>
+      {{end}}
+    </div>
+    {{if $.QuickShare}}
+    <span class="share-status" data-share-status role="status"></span>
+    <input class="share-url mono" data-share-url type="text" aria-label="Публичная ссылка: {{.Title}}" readonly hidden spellcheck="false" autocomplete="off">
+    {{end}}
   </li>
   {{else}}
   <li class="empty-state">Конспектов пока нет.</li>
@@ -175,7 +195,7 @@ const pageTemplates = `
   {{if .Query}}
   <section class="library-section" aria-labelledby="results-title">
     <div class="section-heading"><h2 id="results-title">Результаты поиска</h2><a class="text-action" href="/projects">Сбросить поиск</a></div>
-    {{if .Notes}}{{template "note-list" .Notes}}{{else}}<p class="empty-state">Ничего не найдено.</p>{{end}}
+    {{if .Notes}}{{template "note-list" .}}{{else}}<p class="empty-state">Ничего не найдено.</p>{{end}}
   </section>
   {{else if .Projects}}
   <ul class="project-list">
@@ -226,7 +246,7 @@ const pageTemplates = `
       <a class="text-action" href="/projects/{{.Project.ID}}/manage">Управление проектом</a>
     </div>
     {{if or .Query .Notes}}{{template "library-search" .}}{{end}}
-    {{if and .Query (not .Notes)}}<p class="empty-state">Ничего не найдено. <a href="/projects/{{.Project.ID}}">Сбросить поиск</a></p>{{else}}{{template "note-list" .Notes}}{{end}}
+    {{if and .Query (not .Notes)}}<p class="empty-state">Ничего не найдено. <a href="/projects/{{.Project.ID}}">Сбросить поиск</a></p>{{else}}{{template "note-list" .}}{{end}}
   </section>
 </main>
 </body>
@@ -449,11 +469,7 @@ const pageTemplates = `
       </div>
     </details>
     {{else}}
-    <form method="post" action="/notes/{{.Note.ID}}/share">
-      <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <input type="hidden" name="action" value="create">
-      <button type="submit">Создать ссылку</button>
-    </form>
+    <p>Чтобы создать ссылку, нажмите «Поделиться по ссылке» рядом с конспектом <a href="/projects/{{.Note.ProjectID}}">в списке проекта</a>.</p>
     {{end}}
   </section>
 </main>

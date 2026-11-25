@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	_ "embed"
 	"fmt"
 	"io/fs"
 	"mime"
@@ -18,6 +19,9 @@ import (
 )
 
 const immutableAssetCache = "public, max-age=31536000, immutable"
+
+//go:embed static/share.js
+var shareScript []byte
 
 type assetRepresentation struct {
 	body []byte
@@ -66,7 +70,7 @@ func prepareStaticAssets() staticAssets {
 		panic(fmt.Errorf("prepare embedded reader assets: %w", err))
 	}
 	result := staticAssets{
-		paths:        make(map[string]assetRoute, 2*len(reader)+3),
+		paths:        make(map[string]assetRoute, 2*len(reader)+4),
 		readerPrefix: fmt.Sprintf("/assets/reader/%x/", bundle.Sum(nil)),
 	}
 	for name, asset := range reader {
@@ -74,6 +78,7 @@ func prepareStaticAssets() staticAssets {
 		result.paths[result.readerPrefix+name] = assetRoute{asset: asset, immutable: true}
 	}
 	result.paths["/assets/app.css"] = assetRoute{asset: prepareStaticAsset("app.css", []byte(appCSS))}
+	result.paths["/assets/share.js"] = assetRoute{asset: prepareStaticAsset("share.js", shareScript)}
 	result.paths[appFontURL] = assetRoute{asset: prepareStaticAsset("golos-text.woff2", appFont), immutable: true}
 	result.paths["/assets/fonts/LICENSE-Golos-Text.txt"] = assetRoute{asset: prepareStaticAsset("LICENSE-Golos-Text.txt", appFontLicense)}
 	return result

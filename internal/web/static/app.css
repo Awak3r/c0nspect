@@ -162,6 +162,11 @@ main.shell { padding-block: 3rem 5rem; }
 .notice > :last-child { margin-bottom: 0; }
 .empty-state { padding-block: 1.5rem; color: var(--muted); border-block: 1px solid var(--line); }
 .note-list, .attachment-list { margin: 0; padding: 0; list-style: none; }
+.note-row-meta { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.share-button { min-width: 2.75rem; padding: .375rem; border-color: transparent; }
+.share-status, .share-url { grid-column: 1 / -1; }
+.share-status { color: var(--muted); font-size: var(--text-small); }
+.share-status:empty { position: absolute; }
 .note-list li { padding-block: 1rem; border-bottom: 1px solid var(--line); }
 .item-title { display: flex; align-items: center; min-height: 2.75rem; font-size: var(--text-prose); font-weight: 600; }
 .item-meta { display: inline-block; }

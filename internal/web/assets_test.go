@@ -49,6 +49,7 @@ func TestStaticAssetsVersionedAndLegacy(t *testing.T) {
 		{readerAsset("katex.min.css"), immutableAssetCache, "text/css"},
 		{readerAsset("fonts/KaTeX_Main-Regular.woff2"), immutableAssetCache, "font/woff2"},
 		{"/assets/app.css", "public, no-cache", "text/css"},
+		{"/assets/share.js", "public, no-cache", "text/javascript"},
 		{"/assets/app.css?v=old", "public, no-cache", "text/css"},
 		{stylesheetURL() + "&v=wrong", "public, no-cache", "text/css"},
 		{"/assets/app.css?v=%zz", "public, no-cache", "text/css"},

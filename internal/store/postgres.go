@@ -582,7 +582,16 @@ func (s *Store) DeleteAttachment(ctx context.Context, noteID, id string) (asset 
 	return asset, nil
 }
 
-func (s *Store) ReplaceShare(ctx context.Context, input ShareLink) (link ShareLink, err error) {
+// EnsureShare returns the active link or creates one without invalidating concurrent copies.
+func (s *Store) EnsureShare(ctx context.Context, input ShareLink) (ShareLink, error) {
+	return s.saveShare(ctx, input, false)
+}
+
+func (s *Store) ReplaceShare(ctx context.Context, input ShareLink) (ShareLink, error) {
+	return s.saveShare(ctx, input, true)
+}
+
+func (s *Store) saveShare(ctx context.Context, input ShareLink, replace bool) (link ShareLink, err error) {
 	if input.ID == "" {
 		input.ID = NewID()
 	}
@@ -591,8 +600,15 @@ func (s *Store) ReplaceShare(ctx context.Context, input ShareLink) (link ShareLi
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE share_links SET revoked_at = clock_timestamp() WHERE note_id = $1 AND revoked_at IS NULL`, input.NoteID); err != nil {
-			return err
+		if replace {
+			if _, err := tx.Exec(ctx, `UPDATE share_links SET revoked_at = clock_timestamp() WHERE note_id = $1 AND revoked_at IS NULL`, input.NoteID); err != nil {
+				return err
+			}
+		} else {
+			link, err = activeShare(ctx, tx, input.NoteID)
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
 		}
 		link, err = scanShare(tx.QueryRow(ctx, `INSERT INTO share_links (id, note_id, token_hash) VALUES ($1, $2, $3)
 			RETURNING id, note_id, token_hash, created_at`, input.ID, input.NoteID, input.TokenHash))
@@ -607,9 +623,15 @@ func (s *Store) ReplaceShare(ctx context.Context, input ShareLink) (link ShareLi
 	return link, nil
 }
 
+func activeShare(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, noteID string) (ShareLink, error) {
+	return scanShare(q.QueryRow(ctx, `SELECT id, note_id, token_hash, created_at FROM share_links WHERE note_id = $1 AND revoked_at IS NULL`, noteID))
+}
+
 func (s *Store) ActiveShare(ctx context.Context, noteID string) (link ShareLink, err error) {
 	err = s.withConn(ctx, func(conn *pgx.Conn) error {
-		link, err = scanShare(conn.QueryRow(ctx, `SELECT id, note_id, token_hash, created_at FROM share_links WHERE note_id = $1 AND revoked_at IS NULL`, noteID))
+		link, err = activeShare(ctx, conn, noteID)
 		return err
 	})
 	return

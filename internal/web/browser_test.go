@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime/multipart"
@@ -178,6 +179,11 @@ func browserTestSecurity(t *testing.T, response *httptest.ResponseRecorder, refe
 	if len(referrerPolicy) > 0 {
 		policy = referrerPolicy[0]
 	}
+	browserTestSecurityPolicy(t, response, policy, "'none'")
+}
+
+func browserTestSecurityPolicy(t *testing.T, response *httptest.ResponseRecorder, policy, connectSrc string) {
+	t.Helper()
 	for key, want := range map[string]string{
 		"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
 		"Referrer-Policy": policy, "X-Robots-Tag": "noindex, nofollow",
@@ -187,7 +193,7 @@ func browserTestSecurity(t *testing.T, response *httptest.ResponseRecorder, refe
 		}
 	}
 	csp := response.Header().Get("Content-Security-Policy")
-	for _, directive := range []string{"default-src 'self'", "script-src 'self'", "img-src 'self'", "connect-src 'none'", "form-action 'self'", "frame-ancestors 'none'"} {
+	for _, directive := range []string{"default-src 'self'", "script-src 'self'", "img-src 'self'", "connect-src " + connectSrc, "form-action 'self'", "frame-ancestors 'none'"} {
 		if !slices.Contains(strings.Split(csp, "; "), directive) {
 			t.Errorf("missing CSP directive %q: %q", directive, csp)
 		}
@@ -674,7 +680,11 @@ func TestBrowserFormPagesPreserveSameOriginReferrerPolicy(t *testing.T) {
 		t.Run(tc.path, func(t *testing.T) {
 			response := tc.client.request(t, "GET", tc.path, nil, nil)
 			browserTestStatus(t, response, 200)
-			browserTestSecurity(t, response)
+			if tc.path == "/projects/"+project.ID {
+				browserTestSecurityPolicy(t, response, "same-origin", "'self'")
+			} else {
+				browserTestSecurity(t, response)
+			}
 			doc := browserTestDocument(t, response)
 			// A no-referrer meta can override a compatible response header and
 			// make a browser's native form POST send Origin: null.
@@ -1097,8 +1107,8 @@ func TestBrowserReadersSharingAndAttachmentAuthorization(t *testing.T) {
 	admin := b.request(t, "GET", "/notes/"+note.ID+"/share", nil, nil)
 	browserTestStatus(t, admin, 200)
 	adminDoc := browserTestDocument(t, admin)
-	if browserTestInputID(adminDoc, "share-url") != nil || browserTestInput(t, browserTestForm(t, adminDoc, "/notes/"+note.ID+"/share"), "action") != "create" {
-		t.Error("unshared note's administration UI is incorrect")
+	if browserTestInputID(adminDoc, "share-url") != nil || len(browserTestShareActions(t, adminDoc, note.ID, b.csrf)) != 0 || !browserTestHasLink(adminDoc, "/projects/"+project.ID) {
+		t.Error("unshared note settings should direct the owner to the project list to create a link")
 	}
 	browserTestRedirect(t, anonymous.request(t, "GET", "/notes/"+note.ID+"/share", nil, nil), "/login")
 	browserTestStatus(t, anonymous.form(t, "/notes/"+note.ID+"/share", url.Values{"action": {"create"}}), 401)
@@ -1311,6 +1321,74 @@ func TestBrowserReadersSharingAndAttachmentAuthorization(t *testing.T) {
 	}
 }
 
+func browserTestQuickShare(t *testing.T, b *browserTestClient, path, origin, csrf string) *httptest.ResponseRecorder {
+	t.Helper()
+	values := url.Values{"action": {"create"}, "csrf": {csrf}}
+	return b.request(t, "POST", path, strings.NewReader(values.Encode()), map[string]string{
+		"Content-Type": "application/x-www-form-urlencoded", "Origin": origin, "Accept": "application/json",
+	})
+}
+
+func TestBrowserQuickShareCreatesAndReusesLink(t *testing.T) {
+	app, db := newTestApp(t)
+	b := browserTestOwner(t, app, db)
+	anonymous := &browserTestClient{app: app, db: db}
+	project := b.createProject(t, "Quick sharing", "")
+	note := b.importNotes(t, project.ID, browserTestMarkdown("note.md", "# Quick share"))[0]
+	path := "/notes/" + note.ID + "/share"
+	listPaths := []string{"/projects/" + project.ID, "/projects?q=Quick"}
+	for _, listPath := range listPaths {
+		page := b.request(t, "GET", listPath, nil, nil)
+		browserTestStatus(t, page, 200)
+		browserTestSecurityPolicy(t, page, "same-origin", "'self'")
+		doc := browserTestDocument(t, page)
+		scripts := browserTestElements(doc, "script")
+		form := browserTestForm(t, doc, path)
+		buttons := browserTestElements(form, "button")
+		if len(scripts) != 1 || browserTestAttr(scripts[0], "src") != "/assets/share.js" || !hasLibraryAttr(form, "data-quick-share") || len(buttons) != 1 || browserTestAttr(buttons[0], "aria-label") == "" || browserTestInput(t, form, "action") != "create" || browserTestInput(t, form, "csrf") != b.csrf {
+			t.Fatal("library list omitted the accessible, CSRF-protected sharing control or its script")
+		}
+	}
+	browserTestStatus(t, browserTestQuickShare(t, anonymous, path, app.cfg.BaseURL, b.csrf), http.StatusUnauthorized)
+	browserTestStatus(t, browserTestQuickShare(t, b, path, "https://other.example", b.csrf), http.StatusForbidden)
+	browserTestStatus(t, browserTestQuickShare(t, b, path, app.cfg.BaseURL, "wrong"), http.StatusForbidden)
+	if _, err := db.ActiveShare(t.Context(), note.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("viewing the list or rejected requests created public access: %v", err)
+	}
+
+	var links [2]string
+	t.Run("concurrent clicks", func(t *testing.T) {
+		for i := range links {
+			t.Run(strconv.Itoa(i), func(t *testing.T) {
+				t.Parallel()
+				response := browserTestQuickShare(t, b, path, app.cfg.BaseURL, b.csrf)
+				browserTestStatus(t, response, http.StatusOK)
+				browserTestSecurity(t, response)
+				var result struct{ URL string }
+				if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+					t.Fatal(err)
+				}
+				links[i] = result.URL
+			})
+		}
+	})
+	if !strings.HasPrefix(links[0], app.cfg.BaseURL+"/s/") || links[0] != links[1] {
+		t.Fatal("quick sharing did not reuse the same canonical public URL")
+	}
+	publicPath := strings.TrimPrefix(links[0], app.cfg.BaseURL)
+	browserTestReadOnly(t, anonymous.request(t, "GET", publicPath, nil, nil), true)
+	for _, listPath := range listPaths {
+		page := b.request(t, "GET", listPath, nil, nil)
+		browserTestStatus(t, page, 200)
+		browserTestNoPrivateValues(t, page, publicPath)
+	}
+	// Without the script the same form redirects to the page with the current URL.
+	b.changeShare(t, note.ID, "create")
+	if b.shareURL(t, note.ID) != publicPath {
+		t.Fatal("native form submission replaced the public URL instead of reusing it")
+	}
+}
+
 func TestBrowserShareControlsRecoverAfterAppSecretChange(t *testing.T) {
 	for _, action := range []string{"revoke", "rotate"} {
 		t.Run(action, func(t *testing.T) {
@@ -1355,6 +1433,9 @@ func TestBrowserShareControlsRecoverAfterAppSecretChange(t *testing.T) {
 			}
 			reconstructed := "/s/" + changedApp.shareToken(oldShare.ID)
 			browserTestNoPrivateValues(t, page, oldPath, reconstructed, oldShare.TokenHash)
+			copyResponse := browserTestQuickShare(t, changed, shareAdmin, changedApp.cfg.BaseURL, changed.csrf)
+			browserTestStatus(t, copyResponse, http.StatusConflict)
+			browserTestNoPrivateValues(t, copyResponse, oldPath, reconstructed, oldShare.TokenHash)
 			browserTestStatus(t, public.request(t, "GET", reconstructed, nil, nil), 404)
 			current, err := db.ActiveShare(t.Context(), note.ID)
 			if err != nil || !reflect.DeepEqual(current, oldShare) || !changed.note(t, note.ID).Shared {
@@ -1380,8 +1461,8 @@ func TestBrowserShareControlsRecoverAfterAppSecretChange(t *testing.T) {
 				if browserTestInputID(doc, "share-url") != nil || strings.Contains(browserTestText(doc), "APP_SECRET изменён") {
 					t.Error("revocation left an active URL or changed-secret warning")
 				}
-				if got := browserTestShareActions(t, doc, note.ID, changed.csrf); !reflect.DeepEqual(got, []string{"create"}) {
-					t.Errorf("revoked-share actions = %v, want create", got)
+				if got := browserTestShareActions(t, doc, note.ID, changed.csrf); len(got) != 0 || !browserTestHasLink(doc, "/projects/"+project.ID) {
+					t.Errorf("revoked-share settings should point to the project list without exposing creation forms, got actions %v", got)
 				}
 				if _, err := db.ActiveShare(t.Context(), note.ID); !errors.Is(err, store.ErrNotFound) || changed.note(t, note.ID).Shared {
 					t.Fatalf("changed-secret revocation left an active share: %v", err)

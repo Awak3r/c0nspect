@@ -424,11 +424,9 @@ func (a *App) sharePage(w http.ResponseWriter, r *http.Request) {
 	share, err := a.db.ActiveShare(r.Context(), n.ID)
 	if err == nil {
 		data.ShareActive = true
-		token := a.shareToken(share.ID)
-		if tokenHash(token) != share.TokenHash {
+		data.ShareURL = a.shareURL(share)
+		if data.ShareURL == "" {
 			data.Message = "APP_SECRET изменён: прежняя ссылка всё ещё действует, но её нельзя восстановить для копирования. Верните исходный секрет, перевыпустите ссылку или отключите доступ ниже."
-		} else {
-			data.ShareURL = a.cfg.BaseURL + "/s/" + token
 		}
 	} else if !errors.Is(err, store.ErrNotFound) {
 		a.fail(w, r, err)
@@ -436,26 +434,48 @@ func (a *App) sharePage(w http.ResponseWriter, r *http.Request) {
 	}
 	a.page(w, r, 200, "share", data)
 }
+func (a *App) shareURL(share store.ShareLink) string {
+	token := a.shareToken(share.ID)
+	if tokenHash(token) != share.TokenHash {
+		return ""
+	}
+	return a.cfg.BaseURL + "/s/" + token
+}
+
 func (a *App) changeShare(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("noteID")
-	switch r.FormValue("action") {
+	action := r.PostForm.Get("action")
+	switch action {
 	case "revoke":
 		if err := a.db.RevokeShare(r.Context(), id); err != nil {
 			a.fail(w, r, err)
 			return
 		}
 	case "create", "rotate":
-		existing, err := a.db.ActiveShare(r.Context(), id)
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			a.fail(w, r, err)
-			return
-		}
-		if r.FormValue("action") == "rotate" || existing.ID == "" {
-			shareID := store.NewID()
-			if _, err := a.db.ReplaceShare(r.Context(), store.ShareLink{ID: shareID, NoteID: id, TokenHash: tokenHash(a.shareToken(shareID))}); err != nil {
+		shareID := store.NewID()
+		input := store.ShareLink{ID: shareID, NoteID: id, TokenHash: tokenHash(a.shareToken(shareID))}
+		if action == "rotate" {
+			if _, err := a.db.ReplaceShare(r.Context(), input); err != nil {
 				a.fail(w, r, err)
 				return
 			}
+			break
+		}
+		share, err := a.db.EnsureShare(r.Context(), input)
+		if err != nil {
+			a.fail(w, r, err)
+			return
+		}
+		if r.Header.Get("Accept") == "application/json" {
+			link := a.shareURL(share)
+			if link == "" {
+				a.apiError(w, r, http.StatusConflict, "share_unavailable", "Прежнюю ссылку нельзя восстановить. Перевыпустите её в настройках конспекта.")
+				return
+			}
+			a.writeJSON(w, r, http.StatusOK, struct {
+				URL string `json:"url"`
+			}{URL: link})
+			return
 		}
 	default:
 		a.fail(w, r, &HTTPError{422, "invalid_action", "Неизвестное действие"})
