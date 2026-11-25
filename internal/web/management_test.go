@@ -26,40 +26,26 @@ func TestCompactManagementTemplates(t *testing.T) {
 		return response
 	}
 
-	page := render("manage", pageData{Project: project, Notes: []store.Note{note, other}})
-	doc := browserTestDocument(t, page)
-	markup := page.Body.String()
-	if strings.Index(markup, `id="manage-notes-title"`) > strings.Index(markup, `id="edit-project-title"`) || !browserTestHasLink(doc, "/projects/"+project.ID) {
-		t.Error("project management should lead with its notes and a back link")
+	projectPath := "/projects/" + project.ID
+	doc := libraryTestPage(t, app, "manage", pageData{Project: project, Notes: []store.Note{note, other}}, true)
+	if !browserTestHasLink(doc, projectPath) || len(browserTestElements(doc, "ul")) != 0 || len(browserTestElements(doc, "script")) != 0 {
+		t.Error("project settings should link back without rendering a second notes list")
 	}
-	for _, n := range []store.Note{note, other} {
-		if !browserTestHasLink(doc, "/notes/"+n.ID) || !browserTestHasLink(doc, "/notes/"+n.ID+"/manage") {
-			t.Error("compact list omitted reading or settings link")
-		}
+	edit := browserTestForm(t, doc, projectPath+"/edit")
+	if browserTestInput(t, edit, "name") != project.Name || browserTestInput(t, edit, "csrf") != "test-csrf" || edit.Parent.Data != "main" {
+		t.Error("project metadata form should be immediately visible")
 	}
-	for _, form := range browserTestElements(doc, "form") {
-		action := browserTestAttr(form, "action")
-		if strings.HasPrefix(action, "/notes/") || action == "/projects/"+project.ID+"/notes" {
-			t.Error("project management still contains import or individual note forms")
-		}
-	}
-	if len(browserTestElements(doc, "article")) != 0 {
-		t.Error("project management still repeats note settings cards")
-	}
-	for _, details := range browserTestElements(doc, "details") {
-		for _, attr := range details.Attr {
-			if attr.Key == "open" {
-				t.Error("nonempty project settings should be collapsed")
-			}
-		}
+	remove := browserTestForm(t, doc, projectPath+"/delete")
+	if remove.Parent.Data != "details" || hasLibraryAttr(remove.Parent, "open") || browserTestInput(t, remove, "csrf") != "test-csrf" || browserTestInput(t, remove, "confirm") != "DELETE" {
+		t.Error("project deletion must be collapsed and require confirmation")
 	}
 
-	page = render("manage-note", pageData{Project: project, Projects: []store.Project{project}, Note: note, Entries: []noteEntry{{Note: note}}})
+	page := render("manage-note", pageData{Project: project, Projects: []store.Project{project}, Note: note, Entries: []noteEntry{{Note: note}}})
 	doc = browserTestDocument(t, page)
 	for _, action := range []string{"metadata", "replace", "attachments", "delete"} {
 		browserTestForm(t, doc, "/notes/"+note.ID+"/"+action)
 	}
-	if !browserTestHasLink(doc, "/projects/"+project.ID+"/manage") || !browserTestHasLink(doc, "/notes/"+note.ID+"/share") {
+	if !browserTestHasLink(doc, projectPath) || browserTestHasLink(doc, projectPath+"/manage") || !browserTestHasLink(doc, "/notes/"+note.ID+"/share") {
 		t.Error("note settings omitted return or sharing link")
 	}
 	if strings.Contains(page.Body.String(), other.Title) {

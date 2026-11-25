@@ -70,6 +70,48 @@ func TestLibraryPrimaryActions(t *testing.T) {
 	}
 }
 
+func TestLibraryRowsLinkToNoteSettingsAndMarkOnlySharedNotes(t *testing.T) {
+	app := libraryTestApp(t)
+	project := store.Project{ID: "project", Name: "Математика"}
+	notes := []store.Note{
+		{ID: "private", ProjectID: project.ID, Title: "Ряды"},
+		{ID: "shared", ProjectID: project.ID, Title: "Графы", Shared: true},
+	}
+	for _, name := range []string{"project", "projects"} {
+		t.Run(name, func(t *testing.T) {
+			data := pageData{Notes: notes}
+			if name == "project" {
+				data.Project = project
+			} else {
+				data.Query = "математика"
+			}
+			doc := libraryTestPage(t, app, name, data, true)
+			rows := browserTestElements(doc, "li")
+			if len(rows) != len(notes) {
+				t.Fatalf("got %d note rows, want %d", len(rows), len(notes))
+			}
+			for i, note := range notes {
+				row := rows[i]
+				path := "/notes/" + note.ID
+				if !browserTestHasLink(row, path) || !browserTestHasLink(row, path+"/manage") {
+					t.Errorf("note %s lost its reading or settings link", note.ID)
+				}
+				browserTestForm(t, row, path+"/share")
+				var mark *html.Node
+				for _, span := range browserTestElements(row, "span") {
+					if hasLibraryAttr(span, "data-share-mark") {
+						mark = span
+						break
+					}
+				}
+				if mark == nil || hasLibraryAttr(mark, "hidden") == note.Shared {
+					t.Errorf("note %s has the wrong share indicator state", note.ID)
+				}
+			}
+		})
+	}
+}
+
 func hasLibraryAttr(node *html.Node, name string) bool {
 	for _, attr := range node.Attr {
 		if attr.Key == name {

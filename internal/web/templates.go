@@ -102,15 +102,21 @@ const pageTemplates = `
 <ul class="note-list">
   {{range .Notes}}
   <li>
-    <a class="item-title" href="/notes/{{.ID}}">{{.Title}}</a>
+    <div class="note-row-main">
+      <a class="item-title" href="/notes/{{.ID}}">{{.Title}}</a>
+      {{if $.Owner}}<span class="note-share-mark" data-share-mark{{if not .Shared}} hidden{{end}}>По ссылке</span>{{end}}
+    </div>
     <div class="note-row-meta">
       {{template "library-date" .UpdatedAt}}
       {{if $.QuickShare}}
-      <form method="post" action="/notes/{{.ID}}/share" data-quick-share>
-        <input type="hidden" name="csrf" value="{{$.CSRF}}">
-        <input type="hidden" name="action" value="create">
-        <button type="submit" class="button-quiet share-button" title="Поделиться по ссылке" aria-label="Поделиться по ссылке: {{.Title}}"><span aria-hidden="true">🔗</span></button>
-      </form>
+      <div class="note-row-actions">
+        <form method="post" action="/notes/{{.ID}}/share" data-quick-share>
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <input type="hidden" name="action" value="create">
+          <button type="submit" class="button-quiet share-button" title="Поделиться по ссылке" aria-label="Поделиться по ссылке: {{.Title}}"><span aria-hidden="true">🔗</span></button>
+        </form>
+        <a class="note-settings-link" href="/notes/{{.ID}}/manage" title="Настройки конспекта" aria-label="Настройки конспекта: {{.Title}}"><span aria-hidden="true">⚙︎</span></a>
+      </div>
       {{end}}
     </div>
     {{if $.QuickShare}}
@@ -225,6 +231,7 @@ const pageTemplates = `
     <div>
       <h1>{{.Project.Name}}</h1>
       {{if .Project.Description}}<p class="description library-description">{{.Project.Description}}</p>{{end}}
+      <a class="text-action" href="/projects/{{.Project.ID}}/manage">Настройки проекта</a>
     </div>
     <details class="library-action"{{if not (or .Query .Notes)}} open{{end}}>
       <summary>Импорт .md</summary>
@@ -241,10 +248,7 @@ const pageTemplates = `
   </div>
   {{template "notices" .}}
   <section class="library-section" aria-labelledby="notes-title">
-    <div class="section-heading">
-      <h2 id="notes-title">Конспекты</h2>
-      <a class="text-action" href="/projects/{{.Project.ID}}/manage">Управление проектом</a>
-    </div>
+    <h2 id="notes-title">Конспекты</h2>
     {{if or .Query .Notes}}{{template "library-search" .}}{{end}}
     {{if and .Query (not .Notes)}}<p class="empty-state">Ничего не найдено. <a href="/projects/{{.Project.ID}}">Сбросить поиск</a></p>{{else}}{{template "note-list" .}}{{end}}
   </section>
@@ -258,44 +262,25 @@ const pageTemplates = `
 <main class="shell settings-shell" id="main">
   <p class="breadcrumbs"><a href="/projects/{{.Project.ID}}">← К проекту</a></p>
   <div class="page-heading settings-heading">
-    <p class="page-kicker">Управление проектом</p>
+    <p class="page-kicker">Настройки проекта</p>
     <h1>{{.Project.Name}}</h1>
   </div>
   {{template "notices" .}}
-  <section aria-labelledby="manage-notes-title">
-    <div class="section-heading"><h2 id="manage-notes-title">Конспекты</h2><span class="library-total">Всего: {{len .Notes}}</span></div>
-    <ul class="note-list managed-notes">
-      {{range .Notes}}
-      <li class="managed-note">
-        <div class="managed-note-main">
-          <a class="item-title" href="/notes/{{.ID}}">{{.Title}}</a>
-          <p class="item-meta">{{if .Shared}}Доступен по ссылке{{else}}Только для вас{{end}}</p>
-        </div>
-        <a class="note-settings-link" href="/notes/{{.ID}}/manage" aria-label="Настроить конспект «{{.Title}}»">Настроить</a>
-      </li>
-      {{else}}
-      <li class="empty-state">Конспектов нет.</li>
-      {{end}}
-    </ul>
-  </section>
+  <form class="stack settings-form" method="post" action="/projects/{{.Project.ID}}/edit">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div>
+      <label for="edit-project-name">Название</label>
+      <input id="edit-project-name" name="name" type="text" value="{{.Project.Name}}" maxlength="300" required>
+    </div>
+    <div>
+      <label for="edit-project-description">Описание <span class="optional">(необязательно)</span></label>
+      <textarea id="edit-project-description" name="description" rows="3">{{.Project.Description}}</textarea>
+    </div>
+    <div><button type="submit">Сохранить проект</button></div>
+  </form>
   <details class="settings-divider disclosure section">
-    <summary id="edit-project-title">Название и описание</summary>
-    <form class="stack settings-form" method="post" action="/projects/{{.Project.ID}}/edit">
-      <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <div>
-        <label for="edit-project-name">Название</label>
-        <input id="edit-project-name" name="name" type="text" value="{{.Project.Name}}" maxlength="300" required>
-      </div>
-      <div>
-        <label for="edit-project-description">Описание <span class="optional">(необязательно)</span></label>
-        <textarea id="edit-project-description" name="description" rows="3">{{.Project.Description}}</textarea>
-      </div>
-      <div><button type="submit">Сохранить проект</button></div>
-    </form>
-  </details>
-  <details class="settings-divider disclosure">
     <summary id="delete-project-title">Удалить проект</summary>
-    <p>Будет удалён проект, все его конспекты ({{len .Notes}}) и их вложения. Отменить это действие нельзя.</p>
+    <p>Будут удалены проект, все его конспекты и вложения. Отменить это действие нельзя.</p>
     <form class="stack" method="post" action="/projects/{{.Project.ID}}/delete">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <label class="check"><input type="checkbox" name="confirm" value="DELETE" required> <span>Подтверждаю удаление проекта со всеми материалами и отключение их ссылок доступа.</span></label>
@@ -310,7 +295,7 @@ const pageTemplates = `
 <body>
 {{template "header" .}}
 <main class="shell settings-shell" id="main">
-  <p class="breadcrumbs"><a href="/projects/{{.Project.ID}}/manage">← {{.Project.Name}}</a></p>
+  <p class="breadcrumbs"><a href="/projects/{{.Project.ID}}">← {{.Project.Name}}</a></p>
   <div class="page-heading settings-heading">
     <p class="page-kicker">Настройки конспекта</p>
     <h1>{{.Note.Title}}</h1>

@@ -18,6 +18,7 @@
   for (const form of document.querySelectorAll('form[data-quick-share]')) {
     const row = form.closest('li');
     const status = row.querySelector('[data-share-status]');
+    const mark = row.querySelector('[data-share-mark]');
     const manual = row.querySelector('[data-share-url]');
     const button = form.querySelector('button');
     let pending = false;
@@ -52,6 +53,7 @@
 
         const copy = startCopy(request);
         const url = await request;
+        if (mark) mark.hidden = false;
         if (await copy) {
           status.textContent = 'Ссылка скопирована';
         } else {

@@ -1612,7 +1612,7 @@ func TestBrowserDeletesCleanUploadsAndPreserveOtherNotes(t *testing.T) {
 			redirect := "/notes/" + note.ID + "/manage"
 			switch kind {
 			case "note":
-				redirect = "/projects/" + project.ID + "/manage"
+				redirect = "/projects/" + project.ID
 				path = "/notes/" + note.ID + "/delete"
 				fields.Set("version", b.version(t, note, "delete"))
 			case "project":

@@ -84,12 +84,7 @@ func (a *App) manageProject(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	notes, err := a.db.Notes(r.Context(), p.ID, "", "modified")
-	if err != nil {
-		a.fail(w, r, err)
-		return
-	}
-	a.page(w, r, 200, "manage", pageData{Title: "Управление · " + p.Name, Project: p, Notes: notes})
+	a.page(w, r, 200, "manage", pageData{Title: "Настройки проекта · " + p.Name, Project: p})
 }
 func (a *App) manageNote(w http.ResponseWriter, r *http.Request) {
 	n, err := a.db.Note(r.Context(), r.PathValue("noteID"))
@@ -286,7 +281,7 @@ func (a *App) deleteNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.removeFiles(files)
-	http.Redirect(w, r, "/projects/"+n.ProjectID+"/manage", 303)
+	http.Redirect(w, r, "/projects/"+n.ProjectID, 303)
 }
 func (a *App) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 	n, err := a.db.Note(r.Context(), r.PathValue("noteID"))
